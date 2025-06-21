@@ -8,7 +8,7 @@
 
 **Safe, zero-dependency template-literal tag for SQLite queries in any JS environment.**
 
-`truto-sqlite-builder` provides a secure and ergonomic way to build SQLite queries using tagged template literals. It prevents SQL injection attacks through parameterized queries while offering convenient helper functions for common SQL patterns.
+`@truto/sqlite-builder` provides a secure and ergonomic way to build SQLite queries using tagged template literals. It prevents SQL injection attacks through parameterized queries while offering convenient helper functions for common SQL patterns.
 
 ## ✨ Features
 
@@ -23,26 +23,26 @@
 ## 📦 Installation
 
 ```bash
-bun add truto-sqlite-builder
+bun add @truto/sqlite-builder
 ```
 
 ```bash
-npm install truto-sqlite-builder
+npm install @truto/sqlite-builder
 ```
 
 ```bash
-yarn add truto-sqlite-builder
+yarn add @truto/sqlite-builder
 ```
 
 ```bash
-pnpm add truto-sqlite-builder
+pnpm add @truto/sqlite-builder
 ```
 
 ## 🚀 Quick Start
 
 ```typescript
 import sqlite3 from 'better-sqlite3'
-import { sql } from 'truto-sqlite-builder'
+import { sql } from '@truto/sqlite-builder'
 
 const db = new sqlite3('database.db')
 
@@ -213,7 +213,7 @@ sql`SELECT * FROM users WHERE id = ${Symbol('test')}` // Unsupported type
 ### Basic CRUD Operations
 
 ```typescript
-import { sql } from 'truto-sqlite-builder'
+import { sql } from '@truto/sqlite-builder'
 
 // CREATE with array identifiers
 const insertColumns = ['name', 'email', 'age']
