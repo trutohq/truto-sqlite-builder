@@ -2,7 +2,6 @@
 
 [![npm version](https://badge.fury.io/js/%40truto%2Fsqlite-builder.svg)](https://badge.fury.io/js/%40truto%2Fsqlite-builder)
 [![CI](https://github.com/trutohq/truto-sqlite-builder/actions/workflows/ci.yml/badge.svg)](https://github.com/trutohq/truto-sqlite-builder/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/trutohq/truto-sqlite-builder/branch/main/graph/badge.svg)](https://codecov.io/gh/trutohq/truto-sqlite-builder)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
