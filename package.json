@@ -45,7 +45,6 @@
     "format:check": "prettier --check .",
     "lint": "eslint",
     "lint:fix": "eslint --fix",
-    "prepare": "husky",
     "prepublishOnly": "bun run typecheck && bun run lint && bun test && bun run build",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
