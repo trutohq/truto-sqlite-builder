@@ -2,8 +2,8 @@
  * The result of a SQL tagged template
  */
 export interface SqlQuery {
-  readonly text: string;
-  readonly values: readonly unknown[];
+  readonly text: string
+  readonly values: readonly unknown[]
 }
 
 /**
@@ -17,12 +17,12 @@ export type SqlValue =
   | undefined
   | Date
   | Buffer
-  | Uint8Array;
+  | Uint8Array
 
 /**
  * A SQL fragment that can be joined with other fragments
  */
 export interface SqlFragment {
-  readonly text: string;
-  readonly values: readonly unknown[];
+  readonly text: string
+  readonly values: readonly unknown[]
 }

@@ -6,8 +6,7 @@ Thank you for your interest in contributing to `truto-sqlite-builder`! This docu
 
 ### Prerequisites
 
-- Node.js 18 or higher
-- npm, yarn, pnpm, or bun
+- Bun 1.0 or higher
 - Git
 
 ### Development Setup
@@ -22,18 +21,18 @@ Thank you for your interest in contributing to `truto-sqlite-builder`! This docu
 2. **Install dependencies:**
 
    ```bash
-   npm install
+   bun install
    ```
 
 3. **Run tests to ensure everything works:**
 
    ```bash
-   npm test
+   bun run test
    ```
 
 4. **Start development mode:**
    ```bash
-   npm run dev  # Runs tests in watch mode
+   bun run dev  # Runs tests in watch mode
    ```
 
 ## 🏗️ Project Structure
@@ -57,38 +56,38 @@ truto-sqlite-builder/
 
 ```bash
 # Run all tests
-npm test
+bun run test
 
 # Run tests in watch mode
-npm run dev
+bun run dev
 
 # Run tests with coverage
-npm run test:coverage
+bun run test:coverage
 
 # Run tests with UI
-npm run test:ui
+bun run test:ui
 ```
 
 ### Code Quality
 
 ```bash
 # Type checking
-npm run typecheck
+bun run typecheck
 
 # Linting
-npm run lint
-npm run lint:fix
+bun run lint
+bun run lint:fix
 
 # Formatting
-npm run format
-npm run format:check
+bun run format
+bun run format:check
 ```
 
 ### Building
 
 ```bash
 # Build the project
-npm run build
+bun run build
 ```
 
 ## 📝 Writing Code
@@ -132,17 +131,17 @@ describe('feature name', () => {
   describe('specific functionality', () => {
     it('should do something specific', () => {
       // Arrange
-      const input = 'test input';
+      const input = 'test input'
 
       // Act
-      const result = sql`SELECT * FROM users WHERE name = ${input}`;
+      const result = sql`SELECT * FROM users WHERE name = ${input}`
 
       // Assert
-      expect(result.text).toBe('SELECT * FROM users WHERE name = ?');
-      expect(result.values).toEqual(['test input']);
-    });
-  });
-});
+      expect(result.text).toBe('SELECT * FROM users WHERE name = ?')
+      expect(result.values).toEqual(['test input'])
+    })
+  })
+})
 ```
 
 ### Security Tests
@@ -169,17 +168,17 @@ Always include tests for:
 3. **Run the full test suite:**
 
    ```bash
-   npm run typecheck
-   npm run lint
-   npm test
-   npm run build
+   bun run typecheck
+   bun run lint
+   bun run test
+   bun run build
    ```
 
 4. **Update documentation** if needed
 
 5. **Add a changeset** for your changes:
    ```bash
-   npx changeset
+   bunx changeset
    ```
 
 ### PR Requirements

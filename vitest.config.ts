@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
@@ -6,9 +6,14 @@ export default defineConfig({
     environment: 'node',
     coverage: {
       reporter: ['text', 'json', 'html', 'lcov'],
+      include: [
+        'src/**/*.ts'
+      ],
       exclude: [
         'node_modules/',
         'dist/',
+        'bench/',
+        'examples/',
         '**/*.test.ts',
         '**/*.spec.ts',
         'vitest.config.ts',
@@ -24,4 +29,4 @@ export default defineConfig({
       },
     },
   },
-});
+})

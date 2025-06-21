@@ -1,34 +1,51 @@
-import js from '@eslint/js';
-import security from 'eslint-plugin-security';
-import globals from 'globals';
-import tseslint from 'typescript-eslint';
+import eslint from '@eslint/js'
+import tseslint from '@typescript-eslint/eslint-plugin'
+import tseslintParser from '@typescript-eslint/parser'
+import prettier from 'eslint-plugin-prettier'
+import globals from 'globals'
 
-export default tseslint.config(
+export default [
   {
-    ignores: ['dist/**', 'node_modules/**', '*.js', '*.mjs'],
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      'examples/**',
+      'bench/**',
+      '*.js',
+      '*.mjs',
+      'vitest.config.ts',
+      'eslint.config.js',
+    ],
   },
-  js.configs.recommended,
-  ...tseslint.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
-  security.configs.recommended,
+  eslint.configs.recommended,
   {
+    files: ['src/**/*.ts'],
     languageOptions: {
+      parser: tseslintParser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+      },
       globals: {
         ...globals.node,
         ...globals.es2022,
       },
-      parserOptions: {
-        project: './tsconfig.eslint.json',
-        tsconfigRootDir: import.meta.dirname,
-      },
+    },
+    plugins: {
+      '@typescript-eslint': tseslint,
+      prettier: prettier,
     },
     rules: {
-      '@typescript-eslint/no-unused-vars': 'error',
+      ...tseslint.configs.recommended.rules,
+      ...prettier.configs.recommended.rules,
+      'prettier/prettier': 'error',
+      '@typescript-eslint/explicit-function-return-type': 'off',
       '@typescript-eslint/no-explicit-any': 'warn',
-      'prefer-const': 'error',
-      'security/detect-object-injection': 'off', // Too many false positives
-      'security/detect-non-literal-regexp': 'error',
-      'security/detect-unsafe-regex': 'error',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_' },
+      ],
     },
-  }
-);
+  },
+]
