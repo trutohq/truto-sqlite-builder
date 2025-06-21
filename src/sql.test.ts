@@ -859,15 +859,11 @@ describe('sql tagged template', () => {
     })
 
     it('should reject queries that are too long', () => {
-      const originalEnv = process.env.TRUTO_SQL_MAX_LENGTH
-      process.env.TRUTO_SQL_MAX_LENGTH = '100'
-
-      try {
-        const longQuery = 'SELECT * FROM users WHERE ' + 'a'.repeat(200)
-        expect(() => sql`${sql.raw(longQuery)}`).toThrow('Query too long')
-      } finally {
-        process.env.TRUTO_SQL_MAX_LENGTH = originalEnv
-      }
+      // Test with a query that exceeds the 100KB limit
+      const longQuery = 'SELECT * FROM users WHERE ' + 'a'.repeat(102500)
+      expect(() => sql`${sql.raw(longQuery)}`).toThrow(
+        /Query too long: \d+ bytes \(max: 102400\)/,
+      )
     })
 
     it('should reject Buffer values in interpolation', () => {

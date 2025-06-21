@@ -1,10 +1,7 @@
-import process from 'node:process'
 import type { SqlFragment, SqlQuery, SqlValue } from './types'
 
-// Get max query length from environment (default 100KB)
-function getMaxQueryLength(): number {
-  return parseInt(process.env.TRUTO_SQL_MAX_LENGTH || '102400', 10)
-}
+// Maximum query length (100KB)
+const MAX_QUERY_LENGTH = 102400
 
 // Regex to detect stacked queries (semicolon followed by non-whitespace)
 const STACKED_QUERY_REGEX = /;[\s\S]*\S/
@@ -239,9 +236,10 @@ function sql(strings: TemplateStringsArray, ...values: unknown[]): SqlQuery {
   }
 
   // Security checks
-  const maxLength = getMaxQueryLength()
-  if (text.length > maxLength) {
-    throw new Error(`Query too long: ${text.length} bytes (max: ${maxLength})`)
+  if (text.length > MAX_QUERY_LENGTH) {
+    throw new Error(
+      `Query too long: ${text.length} bytes (max: ${MAX_QUERY_LENGTH})`,
+    )
   }
 
   if (STACKED_QUERY_REGEX.test(text)) {

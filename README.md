@@ -177,7 +177,7 @@ const query = sql`SELECT * FROM users WHERE ${sql.join(conditions, ' AND ')}`
 - **SQL Injection**: All interpolated values are parameterized
 - **Stacked Queries**: Queries containing `;` followed by additional SQL are rejected
 - **Identifier Safety**: `sql.ident()` validates against ANSI identifier rules
-- **Length Limits**: Queries exceeding 100KB are rejected (configurable via `TRUTO_SQL_MAX_LENGTH`)
+- **Length Limits**: Queries exceeding 100KB are rejected
 
 ### What's Your Responsibility
 
@@ -392,17 +392,6 @@ insertUsers([
   { name: 'Alice', email: 'alice@example.com' },
   { name: 'Bob', email: 'bob@example.com' },
 ])
-```
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-- `TRUTO_SQL_MAX_LENGTH`: Maximum query length in bytes (default: 102400 = 100KB)
-
-```bash
-# Increase query size limit to 1MB
-export TRUTO_SQL_MAX_LENGTH=1048576
 ```
 
 ## 🧪 Testing
