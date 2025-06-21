@@ -46,7 +46,7 @@
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "prepare": "husky",
-    "prepublishOnly": "bun run typecheck && bun run lint && bun run test && bun run build",
+    "prepublishOnly": "bun run typecheck && bun run lint && bun test && bun run build",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "test:ui": "vitest --ui",
