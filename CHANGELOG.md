@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+### Patch Changes
+
+- Update the README to use the latest npm package name
+
 ## 1.0.0
 
 ### Major Changes
