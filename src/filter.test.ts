@@ -967,4 +967,241 @@ describe('compileFilter', () => {
       expect(() => compileFilter(filter)).toThrow('Invalid identifier')
     })
   })
+
+  describe('alias blocks', () => {
+    it('should handle simple alias block with equality', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $t2: {
+          column_in_table_2: { gte: 100 },
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '((("status" = ?) AND (t2."column_in_table_2" >= ?)))',
+      )
+      expect(result.values).toEqual(['ACTIVE', 100])
+    })
+
+    it('should handle multiple alias blocks', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $t2: {
+          column_in_table_2: { gte: 100 },
+        },
+        $orders: {
+          amount: { gt: 500 },
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '((("status" = ?) AND (t2."column_in_table_2" >= ?) AND (orders."amount" > ?)))',
+      )
+      expect(result.values).toEqual(['ACTIVE', 100, 500])
+    })
+
+    it('should handle alias block with JSON path', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $t2: {
+          'stats.avg': { lt: 10 },
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '((("status" = ?) AND (json_extract(t2."stats", ?) < ?)))',
+      )
+      expect(result.values).toEqual(['ACTIVE', '$.avg', 10])
+    })
+
+    it('should handle alias block with complex conditions', () => {
+      const filter: JsonFilter = {
+        $users: {
+          age: { gte: 18, lt: 65 },
+          country: { in: ['US', 'CA'] },
+          'profile.verified': true,
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '(((users."age" >= ? AND users."age" < ?) AND (users."country" IN (?,?)) AND (json_extract(users."profile", ?) = ?)))',
+      )
+      expect(result.values).toEqual([18, 65, 'US', 'CA', '$.verified', true])
+    })
+
+    it('should handle alias block with logical operators', () => {
+      const filter: JsonFilter = {
+        $orders: {
+          or: [{ status: 'pending' }, { priority: { gte: 8 } }],
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '(((orders."status" = ?) OR (orders."priority" >= ?)))',
+      )
+      expect(result.values).toEqual(['pending', 8])
+    })
+
+    it('should handle nested logical operators within alias blocks', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $products: {
+          and: [
+            { category: 'electronics' },
+            { or: [{ brand: 'Apple' }, { brand: 'Samsung' }] },
+          ],
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '((("status" = ?) AND ((products."category" = ?) AND ((products."brand" = ?) OR (products."brand" = ?)))))',
+      )
+      expect(result.values).toEqual([
+        'ACTIVE',
+        'electronics',
+        'Apple',
+        'Samsung',
+      ])
+    })
+
+    it('should handle example from specification', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        age: { gte: 18, lt: 65 },
+        $t2: {
+          column_in_table_2: { gte: 100 },
+          'stats.avg': { lt: 10 },
+        },
+        $orders: {
+          amount: { gt: 500 },
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '((("status" = ?) AND ("age" >= ? AND "age" < ?) AND ((t2."column_in_table_2" >= ?) AND (json_extract(t2."stats", ?) < ?)) AND (orders."amount" > ?)))',
+      )
+      expect(result.values).toEqual(['ACTIVE', 18, 65, 100, '$.avg', 10, 500])
+    })
+
+    it('should handle alias with null values', () => {
+      const filter: JsonFilter = {
+        $users: {
+          deleted_at: null,
+          'metadata.flag': { exists: false },
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '(((users."deleted_at" IS NULL) AND (json_extract(users."metadata", ?) IS NULL)))',
+      )
+      expect(result.values).toEqual(['$.flag'])
+    })
+
+    it('should validate invalid alias identifiers', () => {
+      const filter: JsonFilter = {
+        $123invalid: {
+          column: 'value',
+        },
+      }
+      expect(() => compileFilter(filter)).toThrow(
+        'Invalid alias identifier: 123invalid',
+      )
+    })
+
+    it('should validate alias with special characters', () => {
+      const filter: JsonFilter = {
+        '$invalid-alias': {
+          column: 'value',
+        },
+      }
+      expect(() => compileFilter(filter)).toThrow(
+        'Invalid alias identifier: invalid-alias',
+      )
+    })
+
+    it('should validate alias with dots', () => {
+      const filter: JsonFilter = {
+        '$table.alias': {
+          column: 'value',
+        },
+      }
+      expect(() => compileFilter(filter)).toThrow(
+        'Invalid alias identifier: table.alias',
+      )
+    })
+
+    it('should allow valid alias with underscores', () => {
+      const filter: JsonFilter = {
+        $table_alias_123: {
+          column: 'value',
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe('((table_alias_123."column" = ?))')
+      expect(result.values).toEqual(['value'])
+    })
+
+    it('should allow alias starting with underscore', () => {
+      const filter: JsonFilter = {
+        $_table: {
+          column: 'value',
+        },
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe('((_table."column" = ?))')
+      expect(result.values).toEqual(['value'])
+    })
+
+    it('should ensure plain filters still work unchanged', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        age: { gte: 18, lt: 65 },
+        'profile.verified': true,
+        or: [{ priority: { gte: 8 } }, { category: 'urgent' }],
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe(
+        '(((("priority" >= ?) OR ("category" = ?)) AND ("status" = ?) AND ("age" >= ? AND "age" < ?) AND (json_extract("profile", ?) = ?)))',
+      )
+      expect(result.values).toEqual([
+        8,
+        'urgent',
+        'ACTIVE',
+        18,
+        65,
+        '$.verified',
+        true,
+      ])
+    })
+
+    it('should handle empty alias block gracefully', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $empty: {},
+      }
+      expect(() => compileFilter(filter)).toThrow(
+        'Filter must contain at least one condition',
+      )
+    })
+
+    it('should ignore undefined alias blocks', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $ignored: undefined,
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe('(("status" = ?))')
+      expect(result.values).toEqual(['ACTIVE'])
+    })
+
+    it('should ignore non-object alias blocks', () => {
+      const filter: JsonFilter = {
+        status: 'ACTIVE',
+        $invalid: 'not-an-object',
+      }
+      const result = compileFilter(filter)
+      expect(result.text).toBe('(("status" = ?))')
+      expect(result.values).toEqual(['ACTIVE'])
+    })
+  })
 })

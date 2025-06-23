@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.4
+
+### Patch Changes
+
+- make the compileFilter work for join tables by introducing $aliases
+
 ## 1.0.3
 
 ### Patch Changes

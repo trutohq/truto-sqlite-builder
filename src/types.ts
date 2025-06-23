@@ -72,10 +72,15 @@ export interface LogicalOperators {
 
 /**
  * A JSON filter for compiling to SQL WHERE clauses
- * Can be a field-to-condition mapping with implicit AND, or explicit logical operators
+ * Can be a field-to-condition mapping with implicit AND, explicit logical operators,
+ * or alias blocks (keys starting with $) containing nested filters
  */
 export type JsonFilter = LogicalOperators & {
-  [field: string]: FieldCondition | readonly JsonFilter[] | undefined
+  [field: string]:
+    | FieldCondition
+    | readonly JsonFilter[]
+    | JsonFilter
+    | undefined
 }
 
 /**

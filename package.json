@@ -1,6 +1,6 @@
 {
   "name": "@truto/sqlite-builder",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Safe, zero-dependency template-literal tag for SQLite queries in any JS environment",
   "keywords": [
     "sqlite",

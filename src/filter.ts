@@ -1,3 +1,4 @@
+import { SIMPLE_IDENTIFIER_REGEX } from './constants'
 import { sql } from './sql'
 import type {
   ComparisonOperators,
@@ -65,12 +66,20 @@ function compileJsonPath(field: string): {
 }
 
 /**
+ * Validate if a string is a valid SQL identifier
+ */
+function isValidSqlIdentifier(identifier: string): boolean {
+  return SIMPLE_IDENTIFIER_REGEX.test(identifier)
+}
+
+/**
  * Compile a single field condition to SQL
  */
 function compileFieldCondition(
   field: string,
   condition: FieldCondition,
   context: CompileContext,
+  alias?: string,
 ): string {
   // Handle direct value (equality)
   if (
@@ -89,22 +98,28 @@ function compileFieldCondition(
     if (isJsonPath(field)) {
       const { columnName, jsonPath } = compileJsonPath(field)
       const identFragment = sql.ident(columnName)
+      const fullFieldExpr = alias
+        ? `${alias}.${identFragment.text}`
+        : identFragment.text
 
       if (condition === null || condition === undefined) {
         context.values.push(jsonPath)
-        return `(json_extract(${identFragment.text}, ?) IS NULL)`
+        return `(json_extract(${fullFieldExpr}, ?) IS NULL)`
       } else {
         context.values.push(jsonPath, sql.value(condition))
-        return `(json_extract(${identFragment.text}, ?) = ?)`
+        return `(json_extract(${fullFieldExpr}, ?) = ?)`
       }
     } else {
       const identFragment = sql.ident(field)
+      const fullFieldExpr = alias
+        ? `${alias}.${identFragment.text}`
+        : identFragment.text
 
       if (condition === null || condition === undefined) {
-        return `(${identFragment.text} IS NULL)`
+        return `(${fullFieldExpr} IS NULL)`
       } else {
         context.values.push(sql.value(condition))
-        return `(${identFragment.text} = ?)`
+        return `(${fullFieldExpr} = ?)`
       }
     }
   }
@@ -127,9 +142,12 @@ function compileFieldCondition(
   const identFragment = sql.ident(
     isJsonPath(field) ? compileJsonPath(field).columnName : field,
   )
-  const fieldExpr = isJsonPath(field)
-    ? `json_extract(${identFragment.text}, ?)`
+  const baseFieldExpr = alias
+    ? `${alias}.${identFragment.text}`
     : identFragment.text
+  const fieldExpr = isJsonPath(field)
+    ? `json_extract(${baseFieldExpr}, ?)`
+    : baseFieldExpr
 
   // Add JSON path to values if needed
   if (isJsonPath(field)) {
@@ -255,6 +273,7 @@ function compileFieldCondition(
 function compileFilterRecursive(
   filter: JsonFilter,
   context: CompileContext,
+  alias?: string,
 ): string {
   if (context.depth >= MAX_NESTING_DEPTH) {
     throw new RangeError(`Nesting depth too deep (max: ${MAX_NESTING_DEPTH})`)
@@ -282,7 +301,7 @@ function compileFilterRecursive(
     }
 
     const andClauses = filter.and.map((subFilter) =>
-      compileFilterRecursive(subFilter, context),
+      compileFilterRecursive(subFilter, context, alias),
     )
     clauses.push(`(${andClauses.join(' AND ')})`)
   }
@@ -301,15 +320,18 @@ function compileFilterRecursive(
     }
 
     const orClauses = filter.or.map((subFilter) =>
-      compileFilterRecursive(subFilter, context),
+      compileFilterRecursive(subFilter, context, alias),
     )
     clauses.push(`(${orClauses.join(' OR ')})`)
   }
 
-  // Handle field conditions (implicit AND) - preserve original order
+  // Handle field conditions (implicit AND) first - preserve original order
   const fieldEntries = Object.entries(filter).filter(
     ([field, condition]) =>
-      field !== 'and' && field !== 'or' && condition !== undefined,
+      field !== 'and' &&
+      field !== 'or' &&
+      !field.startsWith('$') &&
+      condition !== undefined,
   )
 
   for (const [field, condition] of fieldEntries) {
@@ -321,8 +343,34 @@ function compileFilterRecursive(
     }
 
     clauses.push(
-      compileFieldCondition(field, condition as FieldCondition, context),
+      compileFieldCondition(field, condition as FieldCondition, context, alias),
     )
+  }
+
+  // Handle alias blocks (keys starting with $) after regular fields
+  const aliasEntries = Object.entries(filter).filter(
+    ([key, value]) =>
+      key.startsWith('$') &&
+      value !== undefined &&
+      typeof value === 'object' &&
+      value !== null,
+  )
+
+  for (const [aliasKey, aliasFilter] of aliasEntries) {
+    const aliasName = aliasKey.slice(1) // Remove the $ prefix
+
+    // Validate alias name
+    if (!isValidSqlIdentifier(aliasName)) {
+      throw new SyntaxError(`Invalid alias identifier: ${aliasName}`)
+    }
+
+    // Recursively compile the alias block with the alias context
+    const aliasClause = compileFilterRecursive(
+      aliasFilter as JsonFilter,
+      context,
+      aliasName,
+    )
+    clauses.push(aliasClause)
   }
 
   context.depth--

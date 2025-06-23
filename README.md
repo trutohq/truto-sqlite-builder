@@ -18,6 +18,7 @@
 - 🎯 **TypeScript-first**: Full type safety with excellent IDE support
 - 🔧 **Helper functions**: Built-in utilities for identifiers, IN clauses, and more
 - 🔍 **JSON Filter Language**: MongoDB-style JSON filters for WHERE clauses
+- 🔗 **Qualified Filters**: Table/alias scoping for complex JOINs using `$alias` blocks
 - ⚡ **Lightweight**: Minimal bundle size with tree-shaking support
 
 ## 📦 Installation
@@ -65,6 +66,29 @@ const query = sql`
 `
 
 const results = db.prepare(query.text).all(...query.values)
+
+// Qualified filters for JOINs with alias blocks
+const joinFilter = {
+  status: 'ACTIVE', // Main table
+  $profiles: {
+    // Profile table alias
+    verified: true,
+    'settings.theme': 'dark', // JSON path in profile
+  },
+  $orders: {
+    // Orders table alias
+    total: { gt: 100 },
+  },
+}
+
+const joinWhere = compileFilter(joinFilter)
+const joinQuery = sql`
+  SELECT u.name, p.verified, o.total
+  FROM users u
+  JOIN profiles p ON u.id = p.user_id
+  JOIN orders o ON u.id = o.user_id  
+  WHERE ${sql.raw(joinWhere.text)}
+`
 ```
 
 ## 📖 API Reference
@@ -216,6 +240,7 @@ const query = sql`
 | **Logical AND**           | `"and": [filter1, filter2]`           | `(filter1 AND filter2)`                  | All conditions must match           |
 | **Logical OR**            | `"or": [filter1, filter2]`            | `(filter1 OR filter2)`                   | Any condition must match            |
 | **JSON Path**             | `"profile.email": "test@example.com"` | `json_extract("profile", '$.email') = ?` | Query JSON column fields            |
+| **Alias Blocks**          | `"$alias": { "field": value }`        | `alias."field" = ?`                      | Table/alias qualified fields        |
 
 ### Filter Examples
 
@@ -317,6 +342,136 @@ const filter10 = {
     { or: [{ 'user.role': 'ADMIN' }, { 'user.permissions.canEdit': true }] },
   ],
 }
+```
+
+#### Qualified Filters for JOINs
+
+For complex queries involving multiple tables or aliases, use **alias blocks** with keys starting with `$`:
+
+```typescript
+// Basic alias usage
+const joinFilter = {
+  // Main table fields (no prefix)
+  status: 'ACTIVE',
+  age: { gte: 18, lt: 65 },
+
+  // Table alias 't2'
+  $t2: {
+    column_in_table_2: { gte: 100 },
+    'stats.avg': { lt: 10 }, // JSON path in aliased table
+  },
+
+  // Table alias 'orders'
+  $orders: {
+    amount: { gt: 500 },
+    status: { in: ['completed', 'shipped'] },
+  },
+}
+
+const result = compileFilter(joinFilter)
+// SQL: ((("status" = ?) AND ("age" >= ? AND "age" < ?) AND
+//        ((t2."column_in_table_2" >= ?) AND (json_extract(t2."stats", '$.avg') < ?)) AND
+//        ((orders."amount" > ?) AND (orders."status" IN (?,?)))))
+```
+
+**Alias Block Rules:**
+
+- **Alias names**: Must be valid SQL identifiers (`[A-Za-z_][A-Za-z0-9_]*`)
+- **Prefixing**: All fields in alias blocks get prefixed with `alias.`
+- **JSON paths**: Work seamlessly with aliases: `json_extract(alias."column", '$.path')`
+- **Combination**: Alias blocks are AND-combined with root fields and each other
+- **Order**: Regular fields processed first, then alias blocks
+
+```typescript
+// Complex alias example with logical operators
+const complexJoinFilter = {
+  // Primary table conditions
+  user_status: 'ACTIVE',
+
+  // User profile table
+  $profile: {
+    verified: true,
+    'preferences.notifications': { ne: false },
+    or: [{ subscription_type: 'premium' }, { credits: { gte: 100 } }],
+  },
+
+  // Orders table with complex conditions
+  $orders: {
+    and: [
+      { created_at: { gte: '2024-01-01' } },
+      { or: [{ total_amount: { gt: 1000 } }, { item_count: { gte: 5 } }] },
+    ],
+  },
+}
+
+// Use in JOIN queries
+const whereClause = compileFilter(complexJoinFilter)
+const query = sql`
+  SELECT u.id, u.name, p.subscription_type, o.total_amount
+  FROM users u
+  JOIN profiles p ON u.id = p.user_id  
+  JOIN orders o ON u.id = o.user_id
+  WHERE ${sql.raw(whereClause.text)}
+`
+```
+
+**Security & Validation:**
+
+```typescript
+// ✅ Valid alias identifiers
+$users: { name: 'John' }        // Simple identifier
+$user_profiles: { age: 25 }     // Underscore allowed
+$_temp: { status: 'active' }    // Starting underscore allowed
+
+// ❌ Invalid alias identifiers (will throw SyntaxError)
+$123invalid: { ... }            // Cannot start with number
+$'invalid-alias': { ... }       // Hyphens not allowed
+$'table.alias': { ... }         // Dots not allowed in alias name
+```
+
+**Integration with Complex Queries:**
+
+```typescript
+// Real-world JOIN example
+const userOrderFilter = {
+  // Users table
+  active: true,
+  email: { exists: true },
+
+  // User profiles
+  $profiles: {
+    'settings.email_notifications': true,
+    verified_at: { exists: true },
+  },
+
+  // Recent orders
+  $recent_orders: {
+    created_at: { gte: '2024-01-01' },
+    status: { in: ['completed', 'shipped'] },
+    total: { gt: 50 },
+  },
+}
+
+const whereClause = compileFilter(userOrderFilter)
+
+const complexQuery = sql`
+  SELECT 
+    u.id,
+    u.name,
+    u.email,
+    p.verified_at,
+    COUNT(ro.id) as recent_order_count,
+    SUM(ro.total) as recent_order_total
+  FROM users u
+  JOIN profiles p ON u.id = p.user_id
+  JOIN orders ro ON u.id = ro.user_id 
+  WHERE ${sql.raw(whereClause.text)}
+  GROUP BY u.id, u.name, u.email, p.verified_at
+  HAVING recent_order_count > 0
+  ORDER BY recent_order_total DESC
+`
+
+const results = db.prepare(complexQuery.text).all(...complexQuery.values)
 ```
 
 #### Kitchen Sink Examples
