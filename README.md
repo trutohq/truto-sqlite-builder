@@ -95,7 +95,7 @@ const query = sql`SELECT * FROM ${sql.ident(table)}`
 
 // Qualified identifiers (table.column)
 const qualifiedQuery = sql`SELECT ${sql.ident('u.name')}, ${sql.ident('u.email')} FROM users u`
-// Returns: { text: 'SELECT "u.name", "u.email" FROM users u', values: [] }
+// Returns: { text: 'SELECT "u"."name", "u"."email" FROM users u', values: [] }
 
 // Array of identifiers (useful for column lists)
 const columns = ['name', 'email', 'created_at']
@@ -105,7 +105,7 @@ const selectQuery = sql`SELECT ${sql.ident(columns)} FROM users`
 // Mixed arrays with qualified and simple identifiers
 const mixedColumns = ['u.id', 'name', 'u.email', 'p.title']
 const joinQuery = sql`SELECT ${sql.ident(mixedColumns)} FROM users u JOIN posts p ON u.id = p.user_id`
-// Returns: { text: 'SELECT "u.id", "name", "u.email", "p.title" FROM users u JOIN posts p ON u.id = p.user_id', values: [] }
+// Returns: { text: 'SELECT "u"."id", "name", "u"."email", "p"."title" FROM users u JOIN posts p ON u.id = p.user_id', values: [] }
 
 // Mixed arrays with identifiers and SQL fragments
 const mixedColumns = ['id', 'name', sql.raw('UPPER(email) as email_upper')]
@@ -567,7 +567,7 @@ const simpleQuery = sql`SELECT ${sql.ident(column)} FROM ${sql.ident(table)}`
 
 // ✅ Qualified identifiers (table.column)
 const qualifiedQuery = sql`SELECT ${sql.ident('u.name')}, ${sql.ident('p.title')} FROM users u JOIN posts p ON u.id = p.user_id`
-// Result: SELECT "u.name", "p.title" FROM users u JOIN posts p ON u.id = p.user_id
+// Result: SELECT "u"."name", "p"."title" FROM users u JOIN posts p ON u.id = p.user_id
 
 // ✅ Pure identifier arrays (clean and concise)
 const columns = ['id', 'name', 'email', 'created_at']
@@ -577,7 +577,7 @@ const arrayQuery = sql`SELECT ${sql.ident(columns)} FROM users`
 // ✅ Mixed qualified and simple identifiers in arrays
 const mixedColumns = ['u.id', 'name', 'u.email', 'p.title', 'created_at']
 const mixedQuery = sql`SELECT ${sql.ident(mixedColumns)} FROM users u LEFT JOIN posts p ON u.id = p.user_id`
-// Result: SELECT "u.id", "name", "u.email", "p.title", "created_at" FROM users u LEFT JOIN posts p ON u.id = p.user_id
+// Result: SELECT "u"."id", "name", "u"."email", "p"."title", "created_at" FROM users u LEFT JOIN posts p ON u.id = p.user_id
 
 // ✅ NEW: Mixed arrays with identifiers and SQL fragments
 const mixedColumns = [

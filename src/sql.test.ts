@@ -110,20 +110,20 @@ describe('sql tagged template', () => {
 
     it('should handle qualified identifiers', () => {
       const fragment = sql.ident('u.name')
-      expect(fragment.text).toBe('"u.name"')
+      expect(fragment.text).toBe('"u"."name"')
       expect(fragment.values).toEqual([])
     })
 
     it('should handle multi-level qualified identifiers', () => {
       const fragment = sql.ident('schema.table.column')
-      expect(fragment.text).toBe('"schema.table.column"')
+      expect(fragment.text).toBe('"schema"."table"."column"')
       expect(fragment.values).toEqual([])
     })
 
     it('should work with qualified identifiers in queries', () => {
       const query = sql`SELECT ${sql.ident('u.name')}, ${sql.ident('p.title')} FROM users u JOIN posts p ON u.id = p.user_id`
       expect(query.text).toBe(
-        'SELECT "u.name", "p.title" FROM users u JOIN posts p ON u.id = p.user_id',
+        'SELECT "u"."name", "p"."title" FROM users u JOIN posts p ON u.id = p.user_id',
       )
       expect(query.values).toEqual([])
     })
@@ -131,14 +131,16 @@ describe('sql tagged template', () => {
     it('should handle qualified identifiers in arrays', () => {
       const columns = ['u.id', 'u.name', 'p.title', 'p.created_at']
       const fragment = sql.ident(columns)
-      expect(fragment.text).toBe('"u.id", "u.name", "p.title", "p.created_at"')
+      expect(fragment.text).toBe(
+        '"u"."id", "u"."name", "p"."title", "p"."created_at"',
+      )
       expect(fragment.values).toEqual([])
     })
 
     it('should handle mixed simple and qualified identifiers in arrays', () => {
       const columns = ['name', 'u.email', 'created_at']
       const fragment = sql.ident(columns)
-      expect(fragment.text).toBe('"name", "u.email", "created_at"')
+      expect(fragment.text).toBe('"name", "u"."email", "created_at"')
       expect(fragment.values).toEqual([])
     })
 
@@ -490,7 +492,11 @@ describe('sql tagged template', () => {
 
         validQualifiedIdentifiers.forEach((identifier) => {
           const fragment = sql.ident(identifier)
-          expect(fragment.text).toBe(`"${identifier}"`)
+          const expectedParts = identifier
+            .split('.')
+            .map((part) => `"${part}"`)
+            .join('.')
+          expect(fragment.text).toBe(expectedParts)
           expect(fragment.values).toEqual([])
         })
       })
@@ -562,12 +568,16 @@ describe('sql tagged template', () => {
 
         validIdentifiers.forEach((identifier) => {
           const fragment = sql.ident(identifier)
-          expect(fragment.text).toBe(`"${identifier}"`)
+          const expectedParts = identifier
+            .split('.')
+            .map((part) => `"${part}"`)
+            .join('.')
+          expect(fragment.text).toBe(expectedParts)
           expect(fragment.values).toEqual([])
 
           // Ensure the identifier is properly quoted in a query context
           const query = sql`SELECT ${sql.ident(identifier)} FROM users`
-          expect(query.text).toBe(`SELECT "${identifier}" FROM users`)
+          expect(query.text).toBe(`SELECT ${expectedParts} FROM users`)
           expect(query.values).toEqual([])
         })
       })
@@ -649,12 +659,16 @@ describe('sql tagged template', () => {
 
         legitimateIdentifiers.forEach((identifier) => {
           const fragment = sql.ident(identifier)
-          expect(fragment.text).toBe(`"${identifier}"`)
+          const expectedParts = identifier
+            .split('.')
+            .map((part) => `"${part}"`)
+            .join('.')
+          expect(fragment.text).toBe(expectedParts)
           expect(fragment.values).toEqual([])
 
           // Should work in actual queries
           const query = sql`SELECT ${sql.ident(identifier)} FROM users`
-          expect(query.text).toBe(`SELECT "${identifier}" FROM users`)
+          expect(query.text).toBe(`SELECT ${expectedParts} FROM users`)
           expect(query.values).toEqual([])
         })
       })

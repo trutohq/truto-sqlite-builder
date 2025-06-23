@@ -1,6 +1,6 @@
 {
   "name": "@truto/sqlite-builder",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Safe, zero-dependency template-literal tag for SQLite queries in any JS environment",
   "keywords": [
     "sqlite",
@@ -13,16 +13,16 @@
     "database",
     "query-builder"
   ],
-  "homepage": "https://github.com/truto/truto-sqlite-builder#readme",
+  "homepage": "https://github.com/trutohq/truto-sqlite-builder#readme",
   "bugs": {
-    "url": "https://github.com/truto/truto-sqlite-builder/issues"
+    "url": "https://github.com/trutohq/truto-sqlite-builder/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/truto/truto-sqlite-builder.git"
+    "url": "https://github.com/trutohq/truto-sqlite-builder.git"
   },
   "license": "MIT",
-  "author": "Truto <eng@truto.com>",
+  "author": "Truto <eng@truto.one>",
   "type": "module",
   "exports": {
     ".": {

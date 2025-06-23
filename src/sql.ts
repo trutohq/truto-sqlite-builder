@@ -10,6 +10,9 @@ const STACKED_QUERY_REGEX = /;[\s\S]*\S/
 const QUALIFIED_IDENTIFIER_REGEX =
   /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/
 
+// Simple identifier validation (for individual parts)
+const SIMPLE_IDENTIFIER_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/
+
 /**
  * Format a date for SQLite (YYYY-MM-DD HH:MM:SS)
  */
@@ -54,6 +57,32 @@ function sqlValue(value: SqlValue): unknown {
 }
 
 /**
+ * Quote a single identifier part
+ */
+function quoteSingleIdentifier(identifier: string): string {
+  if (!SIMPLE_IDENTIFIER_REGEX.test(identifier)) {
+    throw new TypeError(
+      `Invalid identifier part: ${identifier}. Must be a valid ANSI identifier.`,
+    )
+  }
+  return `"${identifier}"`
+}
+
+/**
+ * Quote a qualified identifier by splitting on dots and quoting each part
+ */
+function quoteQualifiedIdentifier(identifier: string): string {
+  if (!QUALIFIED_IDENTIFIER_REGEX.test(identifier)) {
+    throw new TypeError(
+      `Invalid identifier: ${identifier}. Must be a valid identifier or qualified identifier (e.g., table.column)`,
+    )
+  }
+
+  const parts = identifier.split('.')
+  return parts.map(quoteSingleIdentifier).join('.')
+}
+
+/**
  * Validate and quote a SQL identifier or array of identifiers/fragments
  */
 function sqlIdent(
@@ -91,7 +120,7 @@ function sqlIdent(
         }
 
         fragments.push({
-          text: '"' + item + '"',
+          text: quoteQualifiedIdentifier(item),
           values: [],
         })
       } else {
@@ -121,7 +150,7 @@ function sqlIdent(
   }
 
   return {
-    text: '"' + identifier + '"',
+    text: quoteQualifiedIdentifier(identifier),
     values: [],
   }
 }
