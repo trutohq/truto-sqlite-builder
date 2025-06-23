@@ -1,7 +1,5 @@
-/// <reference types="node" />
-
 import { performance } from 'perf_hooks'
-import { sql } from '../src/sql.js'
+import { sql } from '../src/sql'
 
 // Benchmark configuration
 const ITERATIONS = 100_000

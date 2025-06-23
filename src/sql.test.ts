@@ -472,6 +472,7 @@ describe('sql tagged template', () => {
           'table.name OR 1=1',
           'table.name UNION SELECT',
           'table.name; EXEC',
+          "2' AND ORD(MID((SELECT DISTINCT(IFNULL(CAST(schema_name AS NCHAR),0x20)) FROM INFORMATION_SCHEMA.SCHEMATA LIMIT 5,1),5,1))>1 AND 'vFAF'='vFAF",
         ]
 
         maliciousQualifiedIdentifiers.forEach((identifier) => {
@@ -964,6 +965,7 @@ describe('sql tagged template', () => {
         "' AND EXISTS(SELECT * FROM admin WHERE username='admin') --",
         "' AND 'a'='a",
         "' AND 'a'='b",
+        "2' AND ORD(MID((SELECT DISTINCT(IFNULL(CAST(schema_name AS NCHAR),0x20)) FROM INFORMATION_SCHEMA.SCHEMATA LIMIT 5,1),5,1))>1 AND 'vFAF'='vFAF",
       ]
 
       blindInjections.forEach((maliciousInput) => {

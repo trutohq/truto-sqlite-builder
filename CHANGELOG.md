@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+### Patch Changes
+
+- Added compileFilter function which converts a mongodb like query object into SQL conditions which can be used with `WHERE`
+
 ## 1.0.1
 
 ### Patch Changes

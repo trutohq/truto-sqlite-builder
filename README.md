@@ -17,6 +17,7 @@
 - 🌍 **Universal**: Works in Bun, Node.js, Deno, and modern browsers
 - 🎯 **TypeScript-first**: Full type safety with excellent IDE support
 - 🔧 **Helper functions**: Built-in utilities for identifiers, IN clauses, and more
+- 🔍 **JSON Filter Language**: MongoDB-style JSON filters for WHERE clauses
 - ⚡ **Lightweight**: Minimal bundle size with tree-shaking support
 
 ## 📦 Installation
@@ -41,7 +42,7 @@ pnpm add @truto/sqlite-builder
 
 ```typescript
 import sqlite3 from 'better-sqlite3'
-import { sql } from '@truto/sqlite-builder'
+import { sql, compileFilter } from '@truto/sqlite-builder'
 
 const db = new sqlite3('database.db')
 
@@ -50,14 +51,17 @@ const name = 'Alice'
 const { text, values } = sql`SELECT * FROM users WHERE name = ${name}`
 const users = db.prepare(text).all(...values)
 
-// Complex query with helpers
-const userIds = [1, 2, 3]
+// JSON Filter queries
+const filter = {
+  name: { like: 'John%' },
+  age: { gte: 18, lt: 65 },
+  or: [{ email: { regex: '.*@example.com$' } }, { phone: { exists: false } }],
+}
+
+const { text: whereText, values: whereValues } = compileFilter(filter)
 const query = sql`
-  SELECT u.*, p.title 
-  FROM ${sql.ident('users')} u
-  JOIN ${sql.ident('posts')} p ON u.id = p.user_id
-  WHERE u.id IN ${sql.in(userIds)}
-    AND u.status = ${'active'}
+  SELECT * FROM users
+  WHERE ${sql.raw(whereText)}
 `
 
 const results = db.prepare(query.text).all(...query.values)
@@ -170,6 +174,251 @@ const query = sql`SELECT * FROM users WHERE ${sql.join(conditions, ' AND ')}`
 // Returns: { text: "SELECT * FROM users WHERE name = ? AND age = ? AND active = ?", values: ['John', 30, true] }
 ```
 
+## 🔍 JSON Filter Language
+
+Build complex WHERE clauses using MongoDB-style JSON filters. Perfect for APIs and dynamic queries.
+
+### `compileFilter(filter: JsonFilter): FilterResult`
+
+Compiles a JSON filter object into a parameterized SQL WHERE clause.
+
+```typescript
+import { compileFilter } from '@truto/sqlite-builder'
+
+const filter = {
+  status: 'ACTIVE',
+  age: { gte: 18, lt: 65 },
+}
+
+const result = compileFilter(filter)
+// Returns: { text: '(("status" = ? AND "age" >= ? AND "age" < ?))', values: ['ACTIVE', 18, 65] }
+
+// Use with the main sql template
+const query = sql`
+  SELECT * FROM users
+  WHERE ${sql.raw(result.text)}
+`
+```
+
+### Supported Operators
+
+| Operator Family           | JSON Form                             | SQL Fragment                             | Description                         |
+| ------------------------- | ------------------------------------- | ---------------------------------------- | ----------------------------------- |
+| **Equality**              | `"field": value`                      | `"field" = ?`                            | Direct value comparison             |
+| **Inequality**            | `"field": { "ne": value }`            | `"field" <> ?`                           | Not equal comparison                |
+| **Comparison**            | `"field": { "gt": value }`            | `"field" > ?`                            | Greater than, gte, lt, lte          |
+| **Set Membership**        | `"field": { "in": [1, 2, 3] }`        | `"field" IN (?,?,?)`                     | Value in array                      |
+| **Negative Set**          | `"field": { "nin": [1, 2] }`          | `"field" NOT IN (?,?)`                   | Value not in array                  |
+| **NULL Checks**           | `"field": { "exists": false }`        | `"field" IS NULL`                        | Check for NULL/NOT NULL             |
+| **LIKE Patterns**         | `"field": { "like": "john%" }`        | `"field" LIKE ?`                         | Pattern matching                    |
+| **Case-insensitive LIKE** | `"field": { "ilike": "%DOE%" }`       | `"field" LIKE ? COLLATE NOCASE`          | Case-insensitive patterns           |
+| **Regular Expressions**   | `"field": { "regex": "^[A-Z]+" }`     | `"field" REGEXP ?`                       | Regex patterns (requires extension) |
+| **Logical AND**           | `"and": [filter1, filter2]`           | `(filter1 AND filter2)`                  | All conditions must match           |
+| **Logical OR**            | `"or": [filter1, filter2]`            | `(filter1 OR filter2)`                   | Any condition must match            |
+| **JSON Path**             | `"profile.email": "test@example.com"` | `json_extract("profile", '$.email') = ?` | Query JSON column fields            |
+
+### Filter Examples
+
+#### Basic Operations
+
+```typescript
+// Equality and comparison
+const filter1 = {
+  status: 'ACTIVE',
+  age: { gte: 18, lt: 65 },
+  score: { gt: 80, lte: 100 },
+}
+// SQL: (("status" = ? AND "age" >= ? AND "age" < ? AND "score" > ? AND "score" <= ?))
+
+// Set membership
+const filter2 = {
+  role: { in: ['ADMIN', 'EDITOR'] },
+  department: { nin: ['ARCHIVED', 'DELETED'] },
+}
+// SQL: (("role" IN (?,?) AND "department" NOT IN (?,?)))
+
+// NULL checks
+const filter3 = {
+  email: { exists: true }, // IS NOT NULL
+  deleted_at: { exists: false }, // IS NULL
+}
+// SQL: (("email" IS NOT NULL AND "deleted_at" IS NULL))
+```
+
+#### Pattern Matching
+
+```typescript
+// LIKE patterns
+const filter4 = {
+  username: { like: 'john%' }, // Starts with 'john'
+  email: { ilike: '%@EXAMPLE.COM%' }, // Case-insensitive contains
+}
+// SQL: (("username" LIKE ? AND "email" LIKE ? COLLATE NOCASE))
+
+// Regular expressions (requires REGEXP extension)
+const filter5 = {
+  email: { regex: '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$' },
+  phone: { regex: '^\\+1[0-9]{10}$' },
+}
+// SQL: (("email" REGEXP ? AND "phone" REGEXP ?))
+```
+
+#### Logical Operators
+
+```typescript
+// AND operator (explicit)
+const filter6 = {
+  and: [
+    { status: 'ACTIVE' },
+    { age: { gte: 18 } },
+    { country: { in: ['US', 'CA', 'GB'] } },
+  ],
+}
+// SQL: ((("status" = ?) AND ("age" >= ?) AND ("country" IN (?,?,?))))
+
+// OR operator
+const filter7 = {
+  or: [
+    { age: { lt: 18 } }, // Minors
+    { age: { gte: 65 } }, // Seniors
+  ],
+}
+// SQL: ((("age" < ?) OR ("age" >= ?)))
+
+// Mixed AND/OR logic
+const filter8 = {
+  status: 'ACTIVE', // Implicit AND
+  or: [{ tags: { ilike: '%urgent%' } }, { priority: { gte: 8 } }],
+}
+// SQL: (((("tags" LIKE ? COLLATE NOCASE) OR ("priority" >= ?)) AND ("status" = ?)))
+```
+
+#### JSON Path Querying
+
+For SQLite JSON columns, use dot notation to query nested fields:
+
+```typescript
+// Query JSON fields
+const filter9 = {
+  'profile.email': { regex: '.*@example\\.org$' },
+  'profile.age': { gte: 21 },
+  'settings.theme': { in: ['dark', 'light'] },
+  'metadata.tags': { exists: true },
+}
+// SQL: ((json_extract("profile", '$.email') REGEXP ? AND
+//        json_extract("profile", '$.age') >= ? AND
+//        json_extract("settings", '$.theme') IN (?,?) AND
+//        json_extract("metadata", '$.tags') IS NOT NULL))
+
+// Complex nested JSON query
+const filter10 = {
+  and: [
+    { 'user.profile.email': { regex: '.*@company\\.com$' } },
+    { or: [{ 'user.role': 'ADMIN' }, { 'user.permissions.canEdit': true }] },
+  ],
+}
+```
+
+#### Kitchen Sink Examples
+
+Real-world complex filters:
+
+```typescript
+// Active users in specific regions, either minors/seniors or VIP
+const complexFilter = {
+  and: [
+    { status: 'ACTIVE' },
+    { or: [{ age: { lt: 18 } }, { age: { gte: 65 } }, { membership: 'VIP' }] },
+    { country: { in: ['US', 'CA', 'GB'] } },
+    { email: { exists: true } },
+    { 'profile.verified': true },
+  ],
+}
+
+// Content filtering with multiple criteria
+const contentFilter = {
+  name: { like: 'Project%' },
+  category: { nin: ['ARCHIVED', 'DELETED', 'SPAM'] },
+  created_at: { exists: true },
+  or: [
+    { tags: { ilike: '%important%' } },
+    { priority: { gte: 8 } },
+    { 'metadata.featured': true },
+  ],
+}
+```
+
+### Integration with SQL Template
+
+```typescript
+import { sql, compileFilter } from '@truto/sqlite-builder'
+
+// Build the WHERE clause
+const filter = {
+  status: 'ACTIVE',
+  age: { gte: 18 },
+  role: { in: ['USER', 'ADMIN'] },
+}
+
+const whereClause = compileFilter(filter)
+
+// Use in complete query
+const query = sql`
+  SELECT id, name, email, created_at
+  FROM users
+  WHERE ${sql.raw(whereClause.text)}
+  ORDER BY created_at DESC
+  LIMIT ${limit}
+`
+
+// Execute with driver
+const results = db.prepare(query.text).all(...query.values)
+```
+
+### Security & Validation
+
+The JSON filter compiler includes comprehensive security measures:
+
+- **Operator validation**: Only known operators are allowed
+- **Identifier safety**: Field names are validated using the same rules as `sql.ident()`
+- **Array limits**: IN/NIN arrays limited to 999 items (SQLite limitation)
+- **DoS protection**: Nesting depth ≤ 10, total operators ≤ 100
+- **Type validation**: Strict type checking for all operator values
+- **SQL injection prevention**: All values are parameterized
+
+```typescript
+// ❌ These will throw errors
+compileFilter({ age: { unknown: 18 } }) // Unknown operator
+compileFilter({ 'user; DROP TABLE': 'value' }) // Invalid identifier
+compileFilter({ role: { in: [] } }) // Empty array
+compileFilter({ role: { in: new Array(1000).fill('x') } }) // Too large array
+
+// ✅ These are safe and valid
+compileFilter({ age: { gte: 18, lte: 65 } }) // Multiple operators
+compileFilter({ 'profile.email': { exists: true } }) // JSON path
+compileFilter({ or: [{ x: 1 }, { y: 2 }] }) // Logical operators
+```
+
+### REGEXP Extension
+
+To use the `regex` operator, you need to load a REGEXP extension in SQLite:
+
+```typescript
+// With better-sqlite3
+import sqlite3 from 'better-sqlite3'
+
+const db = new sqlite3('database.db')
+
+// Load REGEXP extension (varies by implementation)
+// This is implementation-specific - check your SQLite setup
+db.loadExtension('regexp') // Example - actual method may vary
+
+// Now regex filters work
+const filter = {
+  email: { regex: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$' },
+}
+```
+
 ## 🛡️ Security Model
 
 ### What's Protected
@@ -178,6 +427,7 @@ const query = sql`SELECT * FROM users WHERE ${sql.join(conditions, ' AND ')}`
 - **Stacked Queries**: Queries containing `;` followed by additional SQL are rejected
 - **Identifier Safety**: `sql.ident()` validates against ANSI identifier rules
 - **Length Limits**: Queries exceeding 100KB are rejected
+- **Filter Security**: JSON filters validate operators, identifiers, and enforce limits
 
 ### What's Your Responsibility
 
@@ -185,6 +435,7 @@ const query = sql`SELECT * FROM users WHERE ${sql.join(conditions, ' AND ')}`
 - **Validate identifiers before using `sql.ident()`** (though it has built-in validation)
 - **Use `sql.in()` instead of string concatenation** for arrays
 - **Keep your SQLite driver updated**
+- **Load REGEXP extension safely** if using regex filters
 
 ### Supported Value Types
 
@@ -271,6 +522,36 @@ const complexColumns = [
   sql.raw('UPPER(email) as email_upper'),
 ]
 const complexQuery = sql`SELECT ${sql.join(complexColumns)} FROM users`
+```
+
+### Dynamic Queries with JSON Filters
+
+```typescript
+import { sql, compileFilter } from '@truto/sqlite-builder'
+
+// API endpoint that accepts JSON filter
+app.get('/api/users', (req, res) => {
+  // User sends filter as JSON
+  const filter = req.body.filter || {}
+
+  // Safely compile to SQL
+  const whereClause = compileFilter(filter)
+
+  const query = sql`
+    SELECT id, name, email, created_at
+    FROM users
+    WHERE ${sql.raw(whereClause.text)}
+    ORDER BY created_at DESC
+    LIMIT ${req.query.limit || 20}
+  `
+
+  const users = db.prepare(query.text).all(...query.values)
+  res.json(users)
+})
+
+// Example API calls:
+// POST /api/users { "filter": { "status": "ACTIVE", "age": { "gte": 18 } } }
+// POST /api/users { "filter": { "or": [{ "role": "ADMIN" }, { "verified": true }] } }
 ```
 
 ### Array Identifiers & Qualified Identifiers
