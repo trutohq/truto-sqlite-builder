@@ -89,5 +89,27 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Debug OIDC environment
+        run: |
+          echo "npm version: $(npm --version)"
+          echo "node version: $(node --version)"
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
+          echo "NODE_AUTH_TOKEN set: ${NODE_AUTH_TOKEN:+yes}"
+          echo "NPM_CONFIG_USERCONFIG: ${NPM_CONFIG_USERCONFIG:-<unset>}"
+          echo "--- npm config (auth-related) ---"
+          npm config ls -l 2>&1 | grep -iE "registry|userconfig|provenance|auth|//" || true
+          echo "--- any .npmrc files ---"
+          ls -la ~/.npmrc ./.npmrc "${NPM_CONFIG_USERCONFIG:-/nonexistent}" 2>&1 || true
+
       - name: Publish to NPM
-        run: npm publish --provenance --access public
+        run: npm publish --provenance --access public --loglevel verbose
+
+      - name: Dump npm debug log
+        if: always()
+        run: |
+          echo "=== npm debug logs ==="
+          for f in /home/runner/.npm/_logs/*-debug-0.log; do
+            echo "### $f"
+            cat "$f" || true
+          done
