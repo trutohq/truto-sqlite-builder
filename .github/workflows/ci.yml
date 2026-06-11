@@ -87,36 +87,28 @@ jobs:
       - name: Build package
         run: bun run build
 
-      - name: Bisect 1 - real package.json metadata + stub code
-        continue-on-error: true
+      - name: Bisect README quarters
         run: |
-          mkdir -p /tmp/c1 && cd /tmp/c1
-          node -e "const p=require('$GITHUB_WORKSPACE/package.json'); p.version='2.0.2-canary.1'; p.main='index.js'; delete p.files; delete p.exports; delete p.types; delete p.scripts; console.log(JSON.stringify(p))" > package.json
-          echo "module.exports = {};" > index.js
-          npm publish --access public --tag canary
+          RESULTS=""
+          N=10
+          for i in 1 2 3 4; do
+            DIR=/tmp/r$i && mkdir -p $DIR && cd $DIR
+            printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.%s","description":"debug canary","license":"MIT","main":"index.js"}' "$N" > package.json
+            echo "module.exports = {};" > index.js
+            case $i in
+              1) sed -n '1,225p'   "$GITHUB_WORKSPACE/README.md" > README.md ;;
+              2) sed -n '226,450p' "$GITHUB_WORKSPACE/README.md" > README.md ;;
+              3) sed -n '451,675p' "$GITHUB_WORKSPACE/README.md" > README.md ;;
+              4) sed -n '676,900p' "$GITHUB_WORKSPACE/README.md" > README.md ;;
+            esac
+            if npm publish --access public --tag canary > /tmp/out$i.log 2>&1; then
+              RESULTS="$RESULTS\nquarter $i (canary.$N): PUBLISHED"
+            else
+              RESULTS="$RESULTS\nquarter $i (canary.$N): BLOCKED 403"
+            fi
+            N=$((N+1))
+          done
+          echo "=========== RESULTS ==========="
+          echo -e "$RESULTS"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Bisect 2 - real README + stub code
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/c2 && cd /tmp/c2
-          printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.2","description":"debug canary","license":"MIT","main":"index.js"}' > package.json
-          echo "module.exports = {};" > index.js
-          cp "$GITHUB_WORKSPACE/README.md" .
-          npm publish --access public --tag canary
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Bisect 3 - real dist + stub metadata
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/c3 && cd /tmp/c3
-          printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.3","description":"debug canary","license":"MIT","main":"dist/index.js"}' > package.json
-          cp -r "$GITHUB_WORKSPACE/dist" .
-          npm publish --access public --tag canary
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Bisect results
-        run: echo "check step outcomes above"
