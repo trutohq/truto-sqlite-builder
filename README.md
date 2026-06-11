@@ -59,10 +59,11 @@ const filter = {
   or: [{ email: { regex: '.*@example.com$' } }, { phone: { exists: false } }],
 }
 
-const { text: whereText, values: whereValues } = compileFilter(filter)
+// Interpolate the compiled filter directly: its placeholders and values are
+// collected automatically, so query.values is always correctly aligned.
 const query = sql`
   SELECT * FROM users
-  WHERE ${sql.raw(whereText)}
+  WHERE ${compileFilter(filter)}
 `
 
 const results = db.prepare(query.text).all(...query.values)
@@ -81,13 +82,12 @@ const joinFilter = {
   },
 }
 
-const joinWhere = compileFilter(joinFilter)
 const joinQuery = sql`
   SELECT u.name, p.verified, o.total
   FROM users u
   JOIN profiles p ON u.id = p.user_id
   JOIN orders o ON u.id = o.user_id  
-  WHERE ${sql.raw(joinWhere.text)}
+  WHERE ${compileFilter(joinFilter)}
 `
 ```
 
@@ -155,7 +155,7 @@ const insertQuery = sql`
 // Returns: { text: 'INSERT INTO users ("name", "email", "age") VALUES (?, ?, ?)', values: [name, email, age] }
 ```
 
-**Security:** Only accepts valid ANSI identifiers (simple: `name`, qualified: `table.column`) for string elements. SQL fragments are passed through as-is.
+**Security:** Only accepts valid ANSI identifiers (simple: `name`, qualified: `table.column`) for string elements, each capped at 255 characters. SQL fragments are passed through as-is, but **only fragments minted by this library** (e.g. `sql.raw`, nested `sql\`\``) are accepted — a plain `{ text, values }`object (for example from`JSON.parse`) is rejected, so untrusted data can never masquerade as raw SQL.
 
 ### `sql.in(array: readonly unknown[])`
 
@@ -181,9 +181,9 @@ const query = sql`SELECT * FROM users WHERE created_at > ${sql.raw('datetime("no
 // Returns: { text: 'SELECT * FROM users WHERE created_at > datetime("now", "-1 day")', values: [] }
 ```
 
-**⚠️ Warning:** Never use `sql.raw()` with user input. Only use with trusted, static SQL fragments.
+**⚠️ Warning:** `sql.raw()` is the library's single, explicit trust boundary — its argument becomes SQL verbatim. Never pass user input to it. For dynamic WHERE clauses use `compileFilter()`; for identifiers use `sql.ident()`. As a safety net, the `sql` tag verifies that the number of `?` placeholders in the final query exactly matches the number of bound values, so a raw fragment that smuggles a stray `?` (or forgets to carry its value) throws instead of producing a misaligned query.
 
-### `sql.join(fragments: SqlFragment[], separator?: string)`
+### `sql.join(fragments: SqlFragment[], separator?: string | SqlFragment)`
 
 Joins multiple SQL fragments with a separator.
 
@@ -197,6 +197,13 @@ const conditions = [
 const query = sql`SELECT * FROM users WHERE ${sql.join(conditions, ' AND ')}`
 // Returns: { text: "SELECT * FROM users WHERE name = ? AND age = ? AND active = ?", values: ['John', 30, true] }
 ```
+
+**Fragments** must be library-minted fragments (forged `{ text, values }` objects are rejected).
+
+**Separators** support any structural connector safely:
+
+- A **string** separator (e.g. `', '`, `' AND '`, `' UNION ALL '`) is validated to be a pure connector. Separators containing string/identifier quotes (`'`, `"`, `` ` ``, `[`, `]`), statement terminators (`;`), comment markers (`--`, `/*`, `*/`), `NUL`, backslashes, or unbalanced parentheses are rejected — so even an untrusted separator cannot break out of the expression.
+- A **`SqlFragment`** separator (e.g. `sql\` OR weight = ${w} OR \``) lets you parameterize the connector itself; its values are interleaved between fragments automatically.
 
 ## 🔍 JSON Filter Language
 
@@ -215,12 +222,13 @@ const filter = {
 }
 
 const result = compileFilter(filter)
-// Returns: { text: '(("status" = ? AND "age" >= ? AND "age" < ?))', values: ['ACTIVE', 18, 65] }
+// Returns a branded SQL fragment: { text: '(("status" = ?) AND ("age" >= ?) AND ("age" < ?))', values: ['ACTIVE', 18, 65] }
 
-// Use with the main sql template
+// Interpolate it directly into a sql template — no sql.raw() needed. The
+// filter's placeholders and values are collected automatically and stay aligned.
 const query = sql`
   SELECT * FROM users
-  WHERE ${sql.raw(result.text)}
+  WHERE ${result}
 `
 ```
 
@@ -405,13 +413,12 @@ const complexJoinFilter = {
 }
 
 // Use in JOIN queries
-const whereClause = compileFilter(complexJoinFilter)
 const query = sql`
   SELECT u.id, u.name, p.subscription_type, o.total_amount
   FROM users u
   JOIN profiles p ON u.id = p.user_id  
   JOIN orders o ON u.id = o.user_id
-  WHERE ${sql.raw(whereClause.text)}
+  WHERE ${compileFilter(complexJoinFilter)}
 `
 ```
 
@@ -452,8 +459,6 @@ const userOrderFilter = {
   },
 }
 
-const whereClause = compileFilter(userOrderFilter)
-
 const complexQuery = sql`
   SELECT 
     u.id,
@@ -465,7 +470,7 @@ const complexQuery = sql`
   FROM users u
   JOIN profiles p ON u.id = p.user_id
   JOIN orders ro ON u.id = ro.user_id 
-  WHERE ${sql.raw(whereClause.text)}
+  WHERE ${compileFilter(userOrderFilter)}
   GROUP BY u.id, u.name, u.email, p.verified_at
   HAVING recent_order_count > 0
   ORDER BY recent_order_total DESC
@@ -515,13 +520,12 @@ const filter = {
   role: { in: ['USER', 'ADMIN'] },
 }
 
-const whereClause = compileFilter(filter)
-
-// Use in complete query
+// Use in complete query — the filter fragment and the LIMIT value are
+// collected in order, so query.values lines up with the placeholders.
 const query = sql`
   SELECT id, name, email, created_at
   FROM users
-  WHERE ${sql.raw(whereClause.text)}
+  WHERE ${compileFilter(filter)}
   ORDER BY created_at DESC
   LIMIT ${limit}
 `
@@ -579,9 +583,13 @@ const filter = {
 ### What's Protected
 
 - **SQL Injection**: All interpolated values are parameterized
-- **Stacked Queries**: Queries containing `;` followed by additional SQL are rejected
-- **Identifier Safety**: `sql.ident()` validates against ANSI identifier rules
-- **Length Limits**: Queries exceeding 100KB are rejected
+- **Unforgeable fragments**: Only fragments created by this library can contribute raw SQL text. A plain `{ text, values }` object (e.g. from `JSON.parse` or a request body) is treated as a value, never as SQL, closing the structural duck-typing bypass
+- **Placeholder integrity**: The `sql` tag rejects any query whose `?` count does not match its bound-value count, catching raw fragments that smuggle or drop placeholders
+- **Safe `sql.join()` separators**: String separators are validated so they cannot introduce string literals, comments, statement terminators, or unbalanced parentheses; use a `SqlFragment` separator to parameterize the connector itself
+- **Stacked Queries**: Queries containing `;` followed by additional SQL are rejected (detection ignores semicolons inside string literals and comments)
+- **Identifier Safety**: `sql.ident()` validates against ANSI identifier rules and caps each part at 255 characters
+- **Length Limits**: Queries exceeding 100KB are rejected; `compileFilter()` enforces the same cap on its output
+- **Pattern Limits**: `like`/`ilike`/`regex` patterns are capped at 1024 characters to bound matching cost at the SQLite layer
 - **Filter Security**: JSON filters validate operators, identifiers, and enforce limits
 
 ### What's Your Responsibility
@@ -689,13 +697,12 @@ app.get('/api/users', (req, res) => {
   // User sends filter as JSON
   const filter = req.body.filter || {}
 
-  // Safely compile to SQL
-  const whereClause = compileFilter(filter)
-
+  // Safely compile to SQL and interpolate directly. Filter values and the
+  // LIMIT value are collected in order into query.values.
   const query = sql`
     SELECT id, name, email, created_at
     FROM users
-    WHERE ${sql.raw(whereClause.text)}
+    WHERE ${compileFilter(filter)}
     ORDER BY created_at DESC
     LIMIT ${req.query.limit || 20}
   `

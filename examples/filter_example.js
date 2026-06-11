@@ -78,9 +78,12 @@ const whereClause = compileFilter({
   deleted_at: { exists: false }
 });
 
+// Interpolate the compiled filter directly. It is a branded SQL fragment, so
+// its placeholders and values are collected automatically — no sql.raw() and
+// no manual value merging required.
 const query = sql`
   SELECT * FROM companies
-  WHERE ${sql.raw(whereClause.text)}
+  WHERE ${whereClause}
 `;
 
 console.log('Filter WHERE clause:', whereClause.text);
