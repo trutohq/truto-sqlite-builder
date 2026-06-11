@@ -87,24 +87,36 @@ jobs:
       - name: Build package
         run: bun run build
 
-      - name: Canary A - minimal content, no provenance
+      - name: Bisect 1 - real package.json metadata + stub code
         continue-on-error: true
         run: |
-          set -x
-          mkdir -p /tmp/canary && cd /tmp/canary
-          printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.0","description":"debug canary","license":"MIT","main":"index.js"}' > package.json
+          mkdir -p /tmp/c1 && cd /tmp/c1
+          node -e "const p=require('$GITHUB_WORKSPACE/package.json'); p.version='2.0.2-canary.1'; p.main='index.js'; delete p.files; delete p.exports; delete p.types; delete p.scripts; console.log(JSON.stringify(p))" > package.json
           echo "module.exports = {};" > index.js
           npm publish --access public --tag canary
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Canary B - real content, no provenance
+      - name: Bisect 2 - real README + stub code
         continue-on-error: true
-        run: npm publish --access public --tag canary
+        run: |
+          mkdir -p /tmp/c2 && cd /tmp/c2
+          printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.2","description":"debug canary","license":"MIT","main":"index.js"}' > package.json
+          echo "module.exports = {};" > index.js
+          cp "$GITHUB_WORKSPACE/README.md" .
+          npm publish --access public --tag canary
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish to NPM
-        run: npm publish --provenance --access public
+      - name: Bisect 3 - real dist + stub metadata
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/c3 && cd /tmp/c3
+          printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.3","description":"debug canary","license":"MIT","main":"dist/index.js"}' > package.json
+          cp -r "$GITHUB_WORKSPACE/dist" .
+          npm publish --access public --tag canary
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Bisect results
+        run: echo "check step outcomes above"
