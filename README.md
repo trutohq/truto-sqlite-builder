@@ -548,7 +548,7 @@ The JSON filter compiler includes comprehensive security measures:
 ```typescript
 // ❌ These will throw errors
 compileFilter({ age: { unknown: 18 } }) // Unknown operator
-compileFilter({ 'user; DROP TABLE': 'value' }) // Invalid identifier
+compileFilter({ 'user;--': 'value' }) // Invalid identifier (contains ';')
 compileFilter({ role: { in: [] } }) // Empty array
 compileFilter({ role: { in: new Array(1000).fill('x') } }) // Too large array
 

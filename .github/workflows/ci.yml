@@ -87,25 +87,25 @@ jobs:
       - name: Build package
         run: bun run build
 
-      - name: Bisect README lines 451-675 in 28-line chunks
+      - name: Confirm trigger line and fixed README
         run: |
           RESULTS=""
-          N=20
-          START=451
-          while [ $START -le 675 ]; do
-            END=$((START+27)); [ $END -gt 675 ] && END=675
-            DIR=/tmp/r$START && mkdir -p $DIR && cd $DIR
-            printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.%s","description":"debug canary","license":"MIT","main":"index.js"}' "$N" > package.json
+          run_canary() { # $1=label $2=version-suffix $3=readme-file
+            DIR=$(mktemp -d) && cp "$3" "$DIR/README.md" && cd "$DIR"
+            printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.%s","description":"debug canary","license":"MIT","main":"index.js"}' "$2" > package.json
             echo "module.exports = {};" > index.js
-            sed -n "${START},${END}p" "$GITHUB_WORKSPACE/README.md" > README.md
-            if npm publish --access public --tag canary > /tmp/out$START.log 2>&1; then
-              RESULTS="$RESULTS\nlines $START-$END (canary.$N): PUBLISHED"
+            if npm publish --access public --tag canary > /tmp/out$2.log 2>&1; then
+              RESULTS="$RESULTS\n$1: PUBLISHED"
             else
-              RESULTS="$RESULTS\nlines $START-$END (canary.$N): BLOCKED 403"
+              RESULTS="$RESULTS\n$1: BLOCKED 403"
             fi
-            N=$((N+1))
-            START=$((END+1))
-          done
+            cd "$GITHUB_WORKSPACE"
+          }
+          echo "compileFilter({ 'user; DROP TABLE': 'value' }) // Invalid identifier" > /tmp/line551.md
+          run_canary "A: original line 551 alone" 30 /tmp/line551.md
+          run_canary "B: full FIXED README" 31 "$GITHUB_WORKSPACE/README.md"
+          sed -n '535,562p' "$GITHUB_WORKSPACE/README.md" > /tmp/chunk-fixed.md
+          run_canary "C: chunk 535-562 with fix" 32 /tmp/chunk-fixed.md
           echo "=========== RESULTS ==========="
           echo -e "$RESULTS"
         env:
