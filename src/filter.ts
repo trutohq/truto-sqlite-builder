@@ -1,4 +1,10 @@
-import { SIMPLE_IDENTIFIER_REGEX } from './constants'
+import {
+  MAX_IDENTIFIER_LENGTH,
+  MAX_PATTERN_LENGTH,
+  MAX_QUERY_LENGTH,
+  SIMPLE_IDENTIFIER_REGEX,
+} from './constants'
+import { createFragment } from './fragment'
 import { sql } from './sql'
 import type {
   ComparisonOperators,
@@ -69,7 +75,22 @@ function compileJsonPath(field: string): {
  * Validate if a string is a valid SQL identifier
  */
 function isValidSqlIdentifier(identifier: string): boolean {
-  return SIMPLE_IDENTIFIER_REGEX.test(identifier)
+  return (
+    identifier.length <= MAX_IDENTIFIER_LENGTH &&
+    SIMPLE_IDENTIFIER_REGEX.test(identifier)
+  )
+}
+
+/**
+ * Validate a LIKE/ILIKE/REGEXP pattern, bounding its length to limit
+ * pathological matching cost at the SQLite layer.
+ */
+function assertPatternWithinLimit(operator: string, pattern: string): void {
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new RangeError(
+      `${operator} pattern too long: ${pattern.length} characters (max: ${MAX_PATTERN_LENGTH})`,
+    )
+  }
 }
 
 /**
@@ -238,6 +259,7 @@ function compileFieldCondition(
         if (typeof value !== 'string') {
           throw new TypeError('LIKE operator requires a string pattern')
         }
+        assertPatternWithinLimit('LIKE', value)
         context.values.push(value)
         clauses.push(`${fieldExpr} LIKE ?`)
         break
@@ -245,6 +267,7 @@ function compileFieldCondition(
         if (typeof value !== 'string') {
           throw new TypeError('ILIKE operator requires a string pattern')
         }
+        assertPatternWithinLimit('ILIKE', value)
         context.values.push(value)
         clauses.push(`${fieldExpr} LIKE ? COLLATE NOCASE`)
         break
@@ -252,6 +275,7 @@ function compileFieldCondition(
         if (typeof value !== 'string') {
           throw new TypeError('REGEX operator requires a string pattern')
         }
+        assertPatternWithinLimit('REGEX', value)
         context.values.push(value)
         clauses.push(`${fieldExpr} REGEXP ?`)
         break
@@ -397,10 +421,20 @@ export function compileFilter(filter: JsonFilter): FilterResult {
     values: [],
   }
 
-  const text = compileFilterRecursive(filter, context)
+  const text = `(${compileFilterRecursive(filter, context)})`
 
-  return Object.freeze({
-    text: `(${text})`,
-    values: Object.freeze([...context.values]),
-  })
+  // Backstop against output-size denial-of-service. Identifier-length and
+  // operator-count limits keep individual pieces bounded; this guards the
+  // aggregate so compileFilter() cannot emit an oversized clause even when used
+  // standalone (the sql tag enforces the same cap when fragments are composed).
+  if (text.length > MAX_QUERY_LENGTH) {
+    throw new RangeError(
+      `Compiled filter too long: ${text.length} bytes (max: ${MAX_QUERY_LENGTH})`,
+    )
+  }
+
+  // Returned as a branded fragment so it can be interpolated directly into a
+  // sql`` template with its values automatically collected — no sql.raw()
+  // needed, which removes the value-binding footgun.
+  return createFragment(text, context.values) as FilterResult
 }

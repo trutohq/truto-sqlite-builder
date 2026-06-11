@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.0.0
+
+### Major Changes
+
+- Harden the builder against SQL injection and denial-of-service. This release
+  tightens previously-unsafe behavior, so some patterns that used to "work" now
+  throw:
+
+  - **Unforgeable fragments**: only fragments minted by the library (`sql`,
+    `sql.raw`, `sql.ident`, `sql.in`, `sql.blob`, `sql.join`, `compileFilter`) may
+    contribute raw SQL. A plain `{ text, values }` object (e.g. from `JSON.parse`)
+    is now treated as a value and throws, instead of being injected as raw SQL.
+  - **`compileFilter` returns a branded fragment**: interpolate it directly into a
+    `sql\`\`` template (`sql\`WHERE ${compileFilter(filter)}\``). The old
+`sql.raw(compileFilter(filter).text)` pattern now throws a placeholder/value
+    mismatch instead of silently producing a misaligned query.
+  - **Placeholder integrity**: the `sql` tag rejects any query whose `?` count
+    does not equal its bound-value count.
+  - **Safe `sql.join` separators**: string separators are validated as pure
+    connectors; `SqlFragment` separators are supported for parameterized joins.
+  - **New limits**: identifier length (255), compiled-filter output size, and
+    `like`/`ilike`/`regex` pattern length (1024).
+  - Stacked-query detection is now string-literal and comment aware.
+
 ## 1.0.4
 
 ### Patch Changes
