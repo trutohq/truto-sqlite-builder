@@ -87,12 +87,20 @@ jobs:
       - name: Build package
         run: bun run build
 
-      - name: Verify token auth (whoami)
+      - name: Canary A - minimal content, no provenance
+        continue-on-error: true
         run: |
-          echo "token length: ${#NODE_AUTH_TOKEN}"
-          echo "token prefix: ${NODE_AUTH_TOKEN:0:4}"
-          npm whoami
-          npm access list packages 2>&1 | head -20 || true
+          set -x
+          mkdir -p /tmp/canary && cd /tmp/canary
+          printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.0","description":"debug canary","license":"MIT","main":"index.js"}' > package.json
+          echo "module.exports = {};" > index.js
+          npm publish --access public --tag canary
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Canary B - real content, no provenance
+        continue-on-error: true
+        run: npm publish --access public --tag canary
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
