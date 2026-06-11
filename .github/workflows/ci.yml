@@ -87,6 +87,15 @@ jobs:
       - name: Build package
         run: bun run build
 
+      - name: Verify token auth (whoami)
+        run: |
+          echo "token length: ${#NODE_AUTH_TOKEN}"
+          echo "token prefix: ${NODE_AUTH_TOKEN:0:4}"
+          npm whoami
+          npm access list packages 2>&1 | head -20 || true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Publish to NPM
         run: npm publish --provenance --access public
         env:
