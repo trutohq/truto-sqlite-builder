@@ -87,26 +87,24 @@ jobs:
       - name: Build package
         run: bun run build
 
-      - name: Bisect README quarters
+      - name: Bisect README lines 451-675 in 28-line chunks
         run: |
           RESULTS=""
-          N=10
-          for i in 1 2 3 4; do
-            DIR=/tmp/r$i && mkdir -p $DIR && cd $DIR
+          N=20
+          START=451
+          while [ $START -le 675 ]; do
+            END=$((START+27)); [ $END -gt 675 ] && END=675
+            DIR=/tmp/r$START && mkdir -p $DIR && cd $DIR
             printf '{"name":"@truto/sqlite-builder","version":"2.0.2-canary.%s","description":"debug canary","license":"MIT","main":"index.js"}' "$N" > package.json
             echo "module.exports = {};" > index.js
-            case $i in
-              1) sed -n '1,225p'   "$GITHUB_WORKSPACE/README.md" > README.md ;;
-              2) sed -n '226,450p' "$GITHUB_WORKSPACE/README.md" > README.md ;;
-              3) sed -n '451,675p' "$GITHUB_WORKSPACE/README.md" > README.md ;;
-              4) sed -n '676,900p' "$GITHUB_WORKSPACE/README.md" > README.md ;;
-            esac
-            if npm publish --access public --tag canary > /tmp/out$i.log 2>&1; then
-              RESULTS="$RESULTS\nquarter $i (canary.$N): PUBLISHED"
+            sed -n "${START},${END}p" "$GITHUB_WORKSPACE/README.md" > README.md
+            if npm publish --access public --tag canary > /tmp/out$START.log 2>&1; then
+              RESULTS="$RESULTS\nlines $START-$END (canary.$N): PUBLISHED"
             else
-              RESULTS="$RESULTS\nquarter $i (canary.$N): BLOCKED 403"
+              RESULTS="$RESULTS\nlines $START-$END (canary.$N): BLOCKED 403"
             fi
             N=$((N+1))
+            START=$((END+1))
           done
           echo "=========== RESULTS ==========="
           echo -e "$RESULTS"
