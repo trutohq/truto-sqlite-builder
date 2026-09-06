@@ -45,8 +45,20 @@
 // would silently bind every value to the wrong column.
 //
 // A Dialect changes only how SQL is spelled. Everything that decides which ROWS
-// match is the reference's and is the same in all four — including that an
-// empty filter is [ErrEmptyFilter], never "match everything".
+// match is the same in all four, and — apart from the empty filter below — is
+// the reference's.
+//
+// # An empty filter means every row
+//
+// A filter with no conditions compiles to no WHERE clause and no error, so the
+// statement returns the whole table (D-0032). The TypeScript throws instead;
+// this is the one deliberate behavioural divergence in the package.
+//
+// ⚠ On a DELETE or an UPDATE that is every row in the table, and the library
+// will not refuse for you. Guard destructive call sites explicitly with
+// [Clause.IsEmpty], [Fragment.IsEmpty] or Filter.Len. [ErrEmptyFilter] is still
+// exported so a caller can return it itself, and still fires for a NESTED empty
+// filter such as `{"and":[{}]}`.
 //
 // See DIVERGENCES.md in docs/go-port/wiki for the full list of behavioural
 // differences, and README.md in the parent directory for the rest.

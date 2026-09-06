@@ -205,6 +205,19 @@ func runCase(t *testing.T, c diffCase) diffResult {
 		if err != nil {
 			return diffResult{Error: err.Error()}
 		}
+		// The one case the two engines are no longer asked to agree on: since
+		// D-0032 a filter with no conditions compiles to no WHERE clause here and
+		// throws in the reference. The generator cannot currently produce one —
+		// genFilterNode always writes at least one entry, and every entry either
+		// emits a clause or errors — so rather than teach the comparison an
+		// exception, which would blunt it for every other case, this fails loudly
+		// if that ever stops being true. Widening the generator is fine; silently
+		// comparing a deliberate divergence is not.
+		if frag.IsEmpty() {
+			t.Fatalf("the corpus produced a top-level empty filter (%s), which "+
+				"D-0032 makes an INTENDED divergence — exclude it from the "+
+				"generator or compare it separately", c.Filter)
+		}
 		return diffResult{OK: true, Text: frag.Text(), Values: frag.Values()}
 	case "sql":
 		args := make([]any, len(c.Args))

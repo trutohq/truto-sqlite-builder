@@ -55,6 +55,29 @@ func (f Fragment) Text() string { return f.text }
 // SQL safety, since values are always bound and never spliced into text.
 func (f Fragment) Values() []any { return f.values }
 
+// IsEmpty reports that the fragment carries no SQL text.
+//
+// It is how a caller tells "this filter had no conditions" from "this filter
+// compiled to something", since [CompileFilter] on a filter with no conditions
+// returns an empty fragment and no error (D-0032). Splicing an empty fragment
+// into `... WHERE ?` produces a statement ending in a bare WHERE, which the
+// database will reject; on a DELETE or an UPDATE, dropping the WHERE instead
+// affects every row. Decide which you want, at the call site:
+//
+//	where, err := sqlb.CompileFilter(filter)
+//	if err != nil {
+//	    return err
+//	}
+//	if where.IsEmpty() {
+//	    // no conditions: return the whole table, or refuse — your call
+//	}
+//
+// A fragment that FAILED to build is also empty, because a failed fragment
+// carries no text. Check [Fragment.Err] first: `if !f.IsEmpty()` on an unchecked
+// failure silently drops the WHERE clause, which is the same outage from the
+// other direction.
+func (f Fragment) IsEmpty() bool { return f.text == "" }
+
 // Err reports whether the fragment failed to build.
 //
 // Fragment constructors return a Fragment rather than (Fragment, error) so that

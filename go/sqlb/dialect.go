@@ -25,8 +25,10 @@ import "strconv"
 //     anything outside [A-Za-z_][A-Za-z0-9_]* (see validateIdent); sqlfilter
 //     escapes by doubling. That is a security posture, not a syntax, and making
 //     it a dialect flag would let a caller pick the weaker one per database.
-//   - What an empty filter means. "Match everything" versus "error" changes
-//     ROWS, not syntax — see [ErrEmptyFilter].
+//   - What an empty filter means. Every dialect compiles one to no WHERE clause
+//     — "match everything" — and none of them refuses (D-0032). That changes
+//     ROWS, not syntax, so it is decided once for the package rather than per
+//     database. See [Clause.IsEmpty] and [ErrEmptyFilter].
 type Dialect struct {
 	name         string
 	placeholders placeholderStyle

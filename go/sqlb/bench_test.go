@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/trutohq/jsorder"
 )
 
 // The benchmarks mirror bench/benchmark.ts where the reference has an
@@ -213,6 +215,52 @@ func BenchmarkCompileFilterJSONRealistic(b *testing.B) {
 			b.Fatal(err)
 		}
 		sink(frag)
+	}
+}
+
+// BenchmarkJsorderDecodeOnly is jsorder's decode with NO sqlb work at all: the
+// *jsorder.Map tree and nothing else.
+//
+// It exists because it is the floor for any design in which sqlb's compiler
+// walks a jsorder.Map — the map has to be built before it can be walked. That
+// number is what ruled out D-0039's option E: measured here at 285 allocs/op,
+// against 256 for a prototype in which jsorder's tokenizer drives sqlb's own
+// materialisation and no map is built at all. Removing sqlb's second tree
+// cannot beat not building the first one. Keep this benchmark; the argument is
+// only as good as the number, and the number has to stay re-runnable.
+func BenchmarkJsorderDecodeOnly(b *testing.B) {
+	b.SetBytes(int64(len(realisticFilterJSON)))
+	b.ReportAllocs()
+	for b.Loop() {
+		v, err := jsorder.DecodeFloat64(realisticFilterJSON)
+		if err != nil {
+			b.Fatal(err)
+		}
+		sink(v)
+	}
+}
+
+// BenchmarkFilterFromJSAlreadyDecoded is the OTHER door, and it is Envoy's: the
+// caller has already decoded the document for its own reasons and hands the
+// *jsorder.Map straight over (ENVOY-MIGRATION.md, "Decoding the filter"). What
+// it measures is exactly the second tree — the walk that rebuilds a Map into a
+// *Filter — with no decoding in it at all.
+//
+// This is the number that says the walk-the-Map design is not uniformly worse
+// than the tokenizer-hook one: on this path a hook cannot help, because the map
+// already exists, and walking it directly would take this to zero.
+func BenchmarkFilterFromJSAlreadyDecoded(b *testing.B) {
+	decoded, err := jsorder.DecodeFloat64(realisticFilterJSON)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		f, err := FilterFromJS(decoded)
+		if err != nil {
+			b.Fatal(err)
+		}
+		sink(f)
 	}
 }
 

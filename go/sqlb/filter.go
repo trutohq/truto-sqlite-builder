@@ -27,24 +27,28 @@ var (
 	errConditionType   = errors.New("Condition must be a value or operator object")
 )
 
-// ErrEmptyFilter is what compiling a filter with no conditions returns.
+// ErrEmptyFilter is returned when a NESTED filter has no conditions —
+// `{"and":[{}]}`, or an empty alias block. A top-level filter with no
+// conditions is not an error: since D-0032 it compiles to no WHERE clause at
+// all. See [Dialect.CompileWhere].
 //
-// It is exported so a caller can decide, VISIBLY and at its own call site, what
-// an empty filter means for it. goenvoy/internal/sqlfilter/sqlfilter.go:83
-// returns "" for one, which its connectors turn into a statement with no WHERE
-// — "match everything". This package treats it as an error, and that difference
-// changes ROWS, not syntax: swapped silently, a DELETE removes every row in the
-// table or none. It is deliberately NOT a Dialect setting and not an option.
+// It stays exported for two reasons.
 //
-// The unambiguous test is on the filter, before compiling:
+// The first is that a caller may still want to refuse. The library will not do
+// it any more, so the refusal has to be written down where it is visible:
 //
 //	if filter == nil || filter.Len() == 0 {
-//		// no WHERE clause, or refuse the request — the caller's call
+//		return sqlb.ErrEmptyFilter   // or compile it and return every row
 //	}
 //
-// errors.Is(err, ErrEmptyFilter) also matches, but note it fires for a NESTED
-// empty filter too, so it cannot tell "the request had no filter" from
-// "{"and":[{}]}".
+// ⚠ On a DELETE or an UPDATE that check is not optional. An empty filter now
+// means "affect every row in the table", and nothing between the caller and the
+// database will object. That is the difference between a failed run and an
+// outage, and it is the reason ENVOY-MIGRATION.md says so in those words.
+//
+// The second is that errors.Is(err, ErrEmptyFilter) still identifies the nested
+// case, which is a malformed filter rather than an absent one. Do NOT use it to
+// detect "the request had no filter": it cannot fire for that any more.
 var ErrEmptyFilter = errFilterEmpty
 
 // Set records key in order, replacing an existing entry in place.

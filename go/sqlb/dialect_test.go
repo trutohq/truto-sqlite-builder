@@ -349,18 +349,60 @@ func TestDialectCapabilityReporting(t *testing.T) {
 	}
 }
 
-// An empty filter is an error in every dialect, and the sentinel is exported so
-// a caller can decide what to do about it AT ITS OWN CALL SITE. sqlfilter
-// returns "" — "match everything" — which is the divergence that changes rows
-// rather than syntax. See ErrEmptyFilter and NEEDS-INPUT O-S3.
-func TestEmptyFilterIsAnErrorInEveryDialect(t *testing.T) {
+// An empty filter compiles to no WHERE clause in every dialect (D-0032), which
+// is what sqlfilter already did and what the reference does NOT do — it throws.
+// This is the divergence that changes rows rather than syntax, so it is pinned
+// per dialect rather than once: a dialect must not be able to opt out of it in
+// either direction.
+func TestEmptyFilterCompilesToNoWhereClauseInEveryDialect(t *testing.T) {
 	for _, d := range []Dialect{SQLite, Postgres, MySQL, MSSQL} {
-		_, err := d.CompileWhere(NewFilter())
-		if err == nil {
-			t.Fatalf("%s: an empty filter compiled to something", d.Name())
+		clause, err := d.CompileWhere(NewFilter())
+		if err != nil {
+			t.Fatalf("%s: an empty filter errored: %v", d.Name(), err)
 		}
-		if err != ErrEmptyFilter {
-			t.Errorf("%s: err = %v, want ErrEmptyFilter so a caller can branch", d.Name(), err)
+		if !clause.IsEmpty() || clause.Text() != "" {
+			t.Errorf("%s: text = %q, want empty", d.Name(), clause.Text())
+		}
+		if len(clause.Values()) != 0 {
+			t.Errorf("%s: values = %#v, want none", d.Name(), clause.Values())
+		}
+		if clause.Dialect().Name() != d.resolve().Name() {
+			t.Errorf("%s: empty clause lost its dialect: %s", d.Name(), clause.Dialect().Name())
+		}
+
+		// A NESTED empty filter is still an error, and still the exported
+		// sentinel. Emitting nothing there would produce `()` or silently drop a
+		// conjunct, and the reference's error is the useful answer.
+		if _, err := d.CompileWhere(NewFilter().And(NewFilter())); err != ErrEmptyFilter {
+			t.Errorf("%s: nested empty filter err = %v, want ErrEmptyFilter", d.Name(), err)
+		}
+		if _, err := d.CompileWhere(NewFilter().Eq("a", 1).Alias("x", NewFilter())); err != ErrEmptyFilter {
+			t.Errorf("%s: empty alias block err = %v, want ErrEmptyFilter", d.Name(), err)
 		}
 	}
+}
+
+// The hazard D-0032 creates, pinned so it cannot be discovered in production.
+// Nothing between the caller and the database objects to either of these.
+func TestEmptyFilterHazards(t *testing.T) {
+	t.Run("an empty filter spliced after WHERE leaves a bare WHERE", func(t *testing.T) {
+		where, err := CompileFilter(NewFilter())
+		wantNoErr(t, err)
+		q, err := Q("SELECT * FROM t WHERE ?", where)
+		wantNoErr(t, err)
+		wantText(t, q.Text(), "SELECT * FROM t WHERE ")
+	})
+
+	t.Run("JSON that decodes to no conditions means the whole table", func(t *testing.T) {
+		// Every one of these is attacker-reachable as a request body.
+		for _, body := range []string{`{}`, `[]`, `{"$notanobject":"x"}`} {
+			f, err := DecodeFilter([]byte(body))
+			wantNoErr(t, err)
+			where, err := CompileFilter(f)
+			wantNoErr(t, err)
+			if !where.IsEmpty() {
+				t.Errorf("%s compiled to %q, want an empty clause", body, where.Text())
+			}
+		}
+	})
 }

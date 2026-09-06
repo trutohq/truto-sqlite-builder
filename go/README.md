@@ -176,9 +176,10 @@ Four dialects, and a Dialect decides exactly three things:
 | `MySQL` | `?` | `` `x` `` | `LIKE ?` | `REGEXP ?` | **error** |
 | `MSSQL` | `@p1` | `[x]` | `LOWER(x) LIKE LOWER(@p1)` | **error** | `JSON_VALUE(x, @p1)` |
 
-Everything that decides which **rows** match is the reference's and is the same
-in all four: operator semantics, clause order, the truthiness of `exists`, what
-an empty filter means, and the identifier charset.
+Everything that decides which **rows** match is the same in all four — operator
+semantics, clause order, the truthiness of `exists`, what an empty filter means,
+and the identifier charset — and all of it is the reference's except the empty
+filter (`D-0032`).
 
 **Three things a Dialect deliberately is not.**
 
@@ -194,7 +195,8 @@ anything outside `[A-Za-z_][A-Za-z0-9_]*`; none escapes. `sqlfilter` escapes by
 doubling the closing delimiter, which is a different security posture, and
 offering both per database would let a caller pick the weaker one.
 
-*It is not where "empty filter means everything" lives.* See `ErrEmptyFilter`.
+*It is not where "an empty filter means everything" is decided.* That is now
+true in every dialect, and none of them can opt out. See below.
 
 ### `Clause` is not a `Fragment`, and that is the point
 
@@ -223,24 +225,36 @@ MSSQL     ((JSON_VALUE([a], @p1) > @p2 AND JSON_VALUE([a], @p1) < @p3))  3 value
 
 `TestJSONPathMisalignmentIsPositionalOnly` pins both halves.
 
-### Empty filters change rows, not syntax
+### An empty filter means every row, and nothing will refuse for you
 
-`CompileFilter` on a filter with no conditions returns `ErrEmptyFilter`.
-`sqlfilter.go:83` returns `""` for the same input, which its connectors turn
-into a statement with **no WHERE clause** — "match everything". Swapping one for
-the other silently is a `DELETE` that removes every row in the table, or none.
+A filter with no conditions compiles to **no WHERE clause and no error**, so the
+statement returns the whole table (`D-0032`). This is the one place `sqlb`
+deliberately answers a different question than the TypeScript, which throws
+`Filter must contain at least one condition`. It matches
+`goenvoy/internal/sqlfilter:83` and ordinary programmer expectation.
 
-It is not a Dialect setting and not an option. Decide it at your call site,
-where it is visible:
+⚠ **On a `DELETE` or an `UPDATE`, "the whole table" is every row.** The library
+used to refuse; it does not any more, and there is no error to catch. Guard
+destructive call sites explicitly:
 
 ```go
-if filter == nil || filter.Len() == 0 {
-    // no WHERE clause, or refuse the request — your call, written down
+where, err := sqlb.CompileFilter(filter)
+if err != nil {
+    return err
+}
+if where.IsEmpty() && destructive {
+    return sqlb.ErrEmptyFilter   // your refusal, at your call site, in your log
 }
 ```
 
-`errors.Is(err, sqlb.ErrEmptyFilter)` also works, but it fires for a *nested*
-empty filter too, so it cannot tell "no filter was sent" from `{"and":[{}]}`.
+`{}`, `[]`, a filter whose every field is `Undefined`, and `{"$x": "not-an-object"}`
+are all empty. `{"deleted_at": null}` is **not** — that is `IS NULL`.
+
+`ErrEmptyFilter` stays exported for two narrower jobs: returning it yourself,
+and identifying a **nested** empty filter — `{"and":[{}]}` or an empty alias
+block — which still errors, because emitting nothing there would drop a conjunct
+rather than widen the statement. A `nil` `*Filter` is still
+`Filter must be an object`.
 
 ---
 
@@ -256,12 +270,29 @@ go vet ./... && gofmt -l .
 
 ### Parity with the reference suite
 
-**224 of 224 reference cases have a Go counterpart and pass. 0 skipped.**
+**224 of 224 reference cases have a Go counterpart and pass, 0 skipped — of
+which 222 assert the same outcome as the reference and 2 deliberately assert the
+opposite** (`D-0032`: the empty filter no longer throws). The two are named
+`should handle undefined by filtering it out` and `should throw on empty filter
+object`; both keep the reference's name, and both carry a comment at the site
+saying what they now assert and why.
 
-The Go subtest names match the reference's `it` names so the two lists can be
-diffed. **526 test cases pass in total, 0 skipped**: 279 in the three ported
-suites, 105 adversarial, 92 fuzz seed-corpus cases, 23 for the `jsorder` glue,
-26 for the dialects, and the differential run.
+The Go subtest names track the reference's `it` names so the two lists can be
+diffed, but the match is not mechanical, and a name-for-name diff of the two
+files reports 22 reference names with no exact Go counterpart. Every one of them
+is a rename, not a gap: seven carry the `TYPE-ENFORCED` suffix, 13 are renamed
+where the API name differs (`sql.ident()` → `Ident()`, `should handle kitchen
+sink example A` → `kitchen sink A`), and the last two are the `sql.join()`
+argument-type cases, which one Go case covers because the Go compiler rejects
+both at once. Re-derive the count with:
+
+```sh
+grep -c "\bit(" ../src/{sql,filter,security}.test.ts     # 105 + 89 + 30 = 224
+```
+
+**529 test cases pass in total, 0 skipped**: 279 in the three ported suites, 105
+adversarial, 92 fuzz seed-corpus cases, 23 for the `jsorder` glue, 29 for the
+dialects and the empty-filter hazards, and the differential run.
 
 No test in the three ported suites was edited for either the `jsorder` swap or
 the dialects. The SQLite path is byte-identical.
@@ -287,9 +318,10 @@ marked `TYPE-ENFORCED` in the source:
 queries, runs it through `bun` against `../src`, and diffs text, bound values
 and error messages. It skips when `bun` is absent.
 
-**4,000 cases per run by default. The final implementation was diffed over
-190,000 generated cases across seven seeds, and more than half a million across
-the port as a whole, with zero mismatches.** Tune it:
+**4,000 cases per run by default. The current tree was diffed over 150,000
+generated cases across six seeds after the empty-filter change (`D-0032`),
+190,000 across seven seeds before it, and more than half a million across the
+port as a whole, with zero mismatches.** Tune it:
 
 ```sh
 SQLB_DIFF_CASES=25000 SQLB_DIFF_SEED=7 go test -run TestDifferential ./sqlb
@@ -359,6 +391,8 @@ go test -run=XXX -bench=. -benchmem -count=6 ./sqlb
 | `CompileFilterRealistic` — 3 levels, 30 values | 3184.5 | 2576 | 37 |
 | `CompileFilterJSONRealistic` — decode + compile | see below | 23069 | 445 |
 | `FilterDecodeJSONOnly` | see below | 20204 | 395 |
+| `JsorderDecodeOnly` — the decode under it, alone | see below | 17018 | 285 |
+| `FilterFromJSAlreadyDecoded` — the conversion, alone | see below | 3184 | 110 |
 | `QParallel` | 65.2 | 112 | 3 |
 
 Three things a naive transliteration would have got wrong, and what fixing them
@@ -405,11 +439,51 @@ Where the allocations go, from `go tool pprof -sample_index=alloc_objects`:
 | `jsorder`'s own tokenizer walk | 14% |
 
 So **three quarters of the added cost is building an ordered map that is thrown
-away one function later.** That is the shape of the fix, and it is not a fix in
-this repository: `jsorder` would need a way to drive a caller's own
-materialisation from its tokenizer — one decoder, two value models — after which
-`fromJS` disappears. Filed as a lead, not attempted here, because `jsorder`'s
-public API is another agent's to change.
+away one function later.**
+
+### Which half of that to remove — measured, 2026-09-06
+
+There are two trees on the JSON path: `jsorder`'s `*Map`, and the `*Filter`
+`fromJS` builds from it. Two ways to get to one tree, and they remove *different*
+trees:
+
+| | what it removes | how |
+|---|---|---|
+| **walk the map** | the second tree | the compiler walks a `*jsorder.Map`; `Filter` stays as the builder |
+| **hook the tokenizer** | the **first** tree | `jsorder` calls back into `sqlb` per object, so no `*Map` is ever built |
+
+Measured on this box, interleaved, `-count=6`, minimum of six, on the
+645-byte realistic filter (38 objects, 16 arrays, 39 keys):
+
+| | allocs/op | B/op | ns/op |
+|---|---:|---:|---:|
+| today — decode, `fromJS`, compile | 445 | 23,070 | 18,664 |
+| `jsorder.DecodeFloat64` **alone**, nothing else | **285** | 17,018 | 11,774 |
+| `FilterFromJS` alone, on an already-decoded map | 110 | 3,184 | 2,156 |
+| compile alone, from a built `*Filter` | 37 | 2,576 | 3,387 |
+| prototype: tokenizer hook, decode **and** compile | **256** | 7,385 | 11,207 |
+
+The second row is the ceiling on walking the map, because the map has to exist
+before it can be walked — and it is already **higher than the hook prototype's
+total**. Walking the map would land near 335 allocs (285 plus the 50 the compile
+step costs on a decoded tree); the hook lands at 256. **Removing the second tree
+cannot beat not building the first one**, and no amount of care in the compiler
+changes that, because 84% of decode is materialising the value model: three
+allocations per object for `gnata.OrderedMap` — struct, key slice, hash table —
+where a filter needs only ordered entries.
+
+`BenchmarkJsorderDecodeOnly` is in the suite so this stays checkable rather than
+remembered.
+
+The third row is the other half of the story and it points the other way. On the
+door Envoy uses — `FilterFromJS`, where the caller has *already* decoded the
+document — the map exists and a tokenizer hook can do nothing at all, while
+walking the map directly would take those 110 allocations to zero.
+
+Neither is implemented. The hook is a public API addition to `jsorder`, which is
+a human's call: `O-J2` in `truto/docs/go-port/wiki/NEEDS-INPUT.md`, with the
+reasoning in `D-0041`. Note that a filter is decoded once per request against a
+database round trip of milliseconds — the whole argument is worth about 9 µs.
 
 Note that a filter is decoded once per request and compiled once, against a
 database round trip of milliseconds. 9 µs on a query that will spend 2 ms in
@@ -562,7 +636,10 @@ repository. The three worth knowing before you write a line against this:
 And two that matter only if you are coming from `goenvoy/internal/sqlfilter`,
 both of which change **rows** rather than syntax:
 
-4. **An empty filter is an error here and "match everything" there.**
+4. ~~**An empty filter is an error here and "match everything" there.**~~
+   **Resolved 2026-09-06 (`D-0032`): both now mean "match everything", and
+   neither refuses. Every `DELETE` and `UPDATE` call site must guard for
+   itself.**
 5. **An unvalidated identifier is rejected here and escaped there.**
 
 Read [`ENVOY-MIGRATION.md`](ENVOY-MIGRATION.md) before swapping one for the

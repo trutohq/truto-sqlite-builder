@@ -46,8 +46,19 @@ func TestFilter_BasicEquality(t *testing.T) {
 		wantValues(t, r.Values())
 	})
 
+	// INTENDED DIVERGENCE (D-0032, DIVERGENCES S-21). The reference throws
+	// 'Filter must contain at least one condition' here, because filtering the
+	// undefined field out leaves no clauses. sqlb compiles it to no WHERE clause
+	// instead, i.e. the whole table. One of exactly two reference cases whose
+	// expectation this package inverts; the other is "should throw on empty
+	// filter object".
 	t.Run("should handle undefined by filtering it out", func(t *testing.T) {
-		compileErr(t, NewFilter().Eq("deleted_at", Undefined), "Filter must contain at least one condition")
+		r := compile(t, NewFilter().Eq("deleted_at", Undefined))
+		wantText(t, r.Text(), "")
+		wantValues(t, r.Values())
+		if !r.IsEmpty() {
+			t.Error("IsEmpty() = false for a filter with no conditions")
+		}
 	})
 
 	t.Run("should handle Date values", func(t *testing.T) {
@@ -589,8 +600,16 @@ func TestFilter_ErrorHandling(t *testing.T) {
 			"Field 'status' cannot have array value")
 	})
 
+	// INTENDED DIVERGENCE (D-0032, DIVERGENCES S-21). The reference throws; sqlb
+	// returns an empty clause and no error, which a caller turns into a statement
+	// with no WHERE. The name is kept so the two suites still diff case-for-case.
 	t.Run("should throw on empty filter object", func(t *testing.T) {
-		compileErr(t, NewFilter(), "Filter must contain at least one condition")
+		r := compile(t, NewFilter())
+		wantText(t, r.Text(), "")
+		wantValues(t, r.Values())
+		if !r.IsEmpty() {
+			t.Error("IsEmpty() = false for an empty filter")
+		}
 	})
 
 	t.Run("should throw on null filter", func(t *testing.T) {

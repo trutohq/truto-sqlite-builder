@@ -85,53 +85,61 @@ grep for.
 
 ## The five behaviour changes, worst first
 
-### 1. An empty filter is an error, not "match everything"
+### 1. An empty filter means EVERY ROW, and `sqlb` will not refuse for you
 
-**`sqlfilter.go:81-85`:**
+**Changed 2026-09-06 (D-0032). If you read an earlier version of this file, read
+this section again — it now says the opposite.**
 
-```go
-filter := ordered.Of(raw)
-if !filter.OK() || filter.Len() == 0 {
-    return "", nil
-}
-```
-
-An empty or non-object filter compiles to the empty string, and every caller
-turns that into a statement with **no WHERE clause**:
+`sqlfilter.go:81-85` compiles an empty or non-object filter to the empty string,
+and every caller turns that into a statement with **no WHERE clause**:
 `pgconn/postgres.go:160-166`, `mysqlconn/mysql.go:202-208`,
 `sqliteconn/sqlite.go:144-150`.
 
-`sqlb` returns `ErrEmptyFilter`.
+**`sqlb` now does the same.** `CompileWhere` on a filter with no conditions
+returns an empty `Clause` and a **nil error**. It used to return
+`ErrEmptyFilter`; it does not any more.
 
-**This is the dangerous one and it is not a syntax difference.** A naive swap
-turns "no WHERE clause" into a failed run — noisy, survivable. But if someone
-later "fixes" that by making `sqlb` return `""` for an empty filter, or by
-catching the error and skipping the WHERE clause **inside a delete path**, a
-`delete` with a filter that decoded to nothing removes every row in the table.
+**Every destructive call site — `DELETE`, `UPDATE` — must guard explicitly,
+because the library will no longer refuse for them.** On a delete that is the
+difference between a failed run and an outage: a filter that decoded to nothing
+now removes every row in the table, silently, with a successful-looking run.
+There is no error to catch, no log line, and no test that fails.
 
-**Do this:** decide it at each call site, before compiling, where it is visible.
+All of these are empty, and all of them are reachable from a request body:
+
+```jsonc
+{}                       // an empty object
+[]                       // an empty array — the reference treats it as an object with no keys
+{"deleted_at": null}     // NOT empty: this is IS NULL
+{"$notanobject": "x"}    // a $-prefixed key whose value is not an object is ignored
+```
+
+**Do this**, at each call site, where it is visible:
 
 ```go
+clause, err := dialect.CompileWhere(filter)
+if err != nil {
+    return err
+}
+if clause.IsEmpty() && destructive {
+    return fmt.Errorf("refusing to %s with no filter", method)   // or sqlb.ErrEmptyFilter
+}
 where := ""
-if filter != nil && filter.Len() > 0 {
-    clause, err := dialect.CompileWhere(filter)
-    if err != nil {
-        return err
-    }
+if !clause.IsEmpty() {
     where = " WHERE " + clause.Text()
     params = clause.Values()
-} else if isDestructive {
-    return fmt.Errorf("refusing to %s with no filter", method)
 }
 ```
 
-`errors.Is(err, sqlb.ErrEmptyFilter)` also works but is weaker: it fires for a
-*nested* empty filter too, so it cannot distinguish "no filter was sent" from
-`{"and":[{}]}`. Prefer the `Len() == 0` test.
+`filter == nil || filter.Len() == 0` before compiling is equivalent and equally
+fine. What is **not** fine is relying on an error that no longer comes.
 
-Whether `sqlb` should grow an opt-in "empty means everything" mode is an open
-question for a human: `O-S3` in
-`truto/docs/go-port/wiki/NEEDS-INPUT.md`. The recommendation there is **no**.
+`sqlb.ErrEmptyFilter` is still exported, for two narrower jobs: returning it
+yourself when you decide to refuse, and identifying a *nested* empty filter —
+`{"and":[{}]}`, or an empty alias block — which still errors, because emitting
+nothing there would drop a conjunct rather than widen the statement.
+
+A `nil` `*Filter` is still `Filter must be an object`, not an empty clause.
 
 ### 2. Identifiers are rejected, not escaped
 
@@ -334,7 +342,10 @@ the parenthesisation in §5:
 **Write new, in Envoy, because they are Envoy's decision and not `sqlb`'s:**
 
 - for every connector method that takes a filter, one test that an **empty**
-  filter does what that method should do — and for `delete`, that it refuses
+  filter does what that method should do — and for `delete`, that it refuses.
+  This one is not optional any more: since D-0032 nothing below the connector
+  will stop an empty filter from deleting the table, so that test is the only
+  thing standing there.
 
 ## Order of work
 
@@ -354,5 +365,6 @@ lossy boundary (`D-0025`).
 ## Where the rest of the reasoning lives
 
 `truto/docs/go-port/wiki/`: `DECISIONS.md` (`D-0013`, `D-0023`, `D-0024`,
-`D-0025`, `D-0108`, `D-0110`–`D-0113`), `DIVERGENCES.md` (`S-01`…`S-20`),
-`NEEDS-INPUT.md` (`O-S3`), `GOTCHAS.md`.
+`D-0025`, **`D-0032`** — the empty filter, **`D-0041`** — why the filter still
+decodes through a `*jsorder.Map`, `D-0108`, `D-0110`–`D-0113`),
+`DIVERGENCES.md` (`S-01`…`S-21`), `NEEDS-INPUT.md` (`O-J2`), `GOTCHAS.md`.

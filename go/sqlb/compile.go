@@ -90,6 +90,26 @@ func (c Clause) Values() []any { return c.values }
 // Dialect returns the dialect the clause was compiled for.
 func (c Clause) Dialect() Dialect { return c.dialect }
 
+// IsEmpty reports that the filter had no conditions, so there is no WHERE
+// clause to write.
+//
+// Check it before assembling a statement, and check it TWICE on a destructive
+// one — an empty clause on a DELETE or UPDATE affects every row, and since
+// D-0032 the library no longer refuses on your behalf:
+//
+//	if clause.IsEmpty() && destructive {
+//	    return fmt.Errorf("refusing to delete with no filter")
+//	}
+//	q := "SELECT * FROM t"
+//	if !clause.IsEmpty() {
+//	    q += " WHERE " + clause.Text()
+//	}
+//
+// The zero Clause — what [Dialect.CompileWhere] returns alongside an error — is
+// also empty, so handle the error before asking. Treating a failed compile as
+// "no conditions" is the same outage from the other direction.
+func (c Clause) IsEmpty() bool { return c.text == "" }
+
 // CompileWhere is [CompileFilter] in this dialect's SQL.
 //
 // Everything that decides which ROWS match — operator semantics, clause order,
@@ -99,6 +119,33 @@ func (c Clause) Dialect() Dialect { return c.dialect }
 // `regex` and a JSON path are written.
 func (d Dialect) CompileWhere(f *Filter) (Clause, error) {
 	d = d.resolve()
+
+	// A nil *Filter is the reference's `compileFilter(null)` and still errors.
+	// Only an EMPTY one is "no conditions".
+	if f == nil {
+		return Clause{}, errFilterNotObject
+	}
+
+	// D-0032: a filter with no conditions compiles to NO WHERE CLAUSE — an empty
+	// Clause and a nil error — rather than [ErrEmptyFilter]. The reference throws
+	// here (src/filter.ts:403); this is the one place sqlb deliberately answers a
+	// different question, because "no filter" meaning "every row" is what a
+	// programmer expects and what goenvoy/internal/sqlfilter:83 already does.
+	//
+	// The danger is entirely on the caller's side and it is not theoretical: the
+	// same empty clause on a DELETE or an UPDATE means every row in the table.
+	// The library will no longer refuse for you. See [Clause.IsEmpty] and the
+	// "empty filter" section of ENVOY-MIGRATION.md.
+	//
+	// Only the TOP level is affected. A nested empty filter — `{"and":[{}]}`, or
+	// an empty alias block — still returns [ErrEmptyFilter], because emitting
+	// nothing there would either produce `()` or silently drop a conjunct, and
+	// because the reference's error is the useful answer for a filter that was
+	// written but says nothing.
+	if countClauses(f) == 0 {
+		return Clause{dialect: d}, nil
+	}
+
 	ctx := compileCtx{
 		dialect: d,
 		buf:     make([]byte, 0, 256),
