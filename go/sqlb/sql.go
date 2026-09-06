@@ -26,6 +26,10 @@ func failed(err error) Fragment { return Fragment{err: err} }
 
 // Q assembles a query from a constant format and its interpolation arguments.
 // Port of the sql tagged template (src/sql.ts:390).
+//
+// Q is `?`-placeholder only, and that is enforced by types rather than by a
+// check: a numbered-placeholder dialect compiles to a [Clause], which has no
+// way into a Fragment. See [Dialect.CompileWhere].
 func Q(text sqlText, args ...any) (Fragment, error) {
 	format := string(text)
 

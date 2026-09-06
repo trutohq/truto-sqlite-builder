@@ -16,6 +16,12 @@ import (
 // examples" and it is what the fuzzers below assert.
 const safeGrammar = `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ ()"?,.<>=$`
 
+// dialectGrammar is safeGrammar widened by exactly the delimiters the other
+// dialects use — backtick, brackets, @ for @p1, and ~ for Postgres's regex
+// operator. Nothing else: a dialect changes the spelling, never the alphabet's
+// openness.
+const dialectGrammar = safeGrammar + "`[]@~"
+
 // assertClauseIsSafe fails if a compiled clause escaped the closed alphabet or
 // looks like more than one statement.
 func assertClauseIsSafe(t *testing.T, text string) {
@@ -59,7 +65,11 @@ func FuzzCompileFilterJSON(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, raw string) {
-		frag, err := CompileFilterJSON([]byte(raw))
+		filter, err := DecodeFilter([]byte(raw))
+		if err != nil {
+			return
+		}
+		frag, err := CompileFilter(filter)
 		if err != nil {
 			if frag.Text() != "" {
 				t.Fatalf("failed compile returned text %q", frag.Text())
@@ -298,6 +308,71 @@ func FuzzJoinSeparator(f *testing.F) {
 		}
 		if depth != 0 {
 			t.Fatalf("join produced unbalanced parentheses: %q", text)
+		}
+	})
+}
+
+// FuzzCompileWhereAllDialects is FuzzCompileFilterJSON widened to every
+// dialect. It exists because a dialect writes new literal text into the query —
+// a quote character, an operator spelling — and that is exactly the kind of
+// change that can reopen the code channel.
+//
+// The property is the same one and it is deliberately not relaxed: whatever the
+// input, the output is drawn from a closed alphabet, holds no comment marker,
+// and is one statement.
+func FuzzCompileWhereAllDialects(f *testing.F) {
+	for _, s := range []string{
+		`{"status":"ACTIVE"}`,
+		`{"a":{"gt":1,"lt":2}}`,
+		`{"a.b":{"in":[1,2,3]}}`,
+		`{"and":[{"a":1},{"or":[{"b":2},{"c":null}]}]}`,
+		`{"$t2":{"col":{"gte":100}}}`,
+		"{\"a\":{\"ilike\":\"%x`%\"}}",
+		`{"a":{"regex":"^[a-z]]"}}`,
+		`{"a];DROP TABLE t;--":1}`,
+		"{\"a`;DROP TABLE t;--\":1}",
+		`{"a":{"like":"@p1 OR 1=1"}}`,
+	} {
+		f.Add(s)
+	}
+
+	dialects := []Dialect{SQLite, Postgres, MySQL, MSSQL}
+	f.Fuzz(func(t *testing.T, raw string) {
+		filter, err := DecodeFilter([]byte(raw))
+		if err != nil {
+			return
+		}
+		for _, d := range dialects {
+			clause, err := d.CompileWhere(filter)
+			if err != nil {
+				if clause.Text() != "" {
+					t.Fatalf("%s: failed compile returned text %q", d.Name(), clause.Text())
+				}
+				continue
+			}
+			for i := range len(clause.Text()) {
+				if !strings.ContainsRune(dialectGrammar, rune(clause.Text()[i])) {
+					t.Fatalf("%s: clause contains %q, outside the closed alphabet: %q",
+						d.Name(), clause.Text()[i], clause.Text())
+				}
+			}
+			if strings.Contains(clause.Text(), "--") || strings.Contains(clause.Text(), "/*") {
+				t.Fatalf("%s: clause contains a comment marker: %q", d.Name(), clause.Text())
+			}
+			if strings.Contains(clause.Text(), ";") {
+				t.Fatalf("%s: clause contains a statement terminator: %q", d.Name(), clause.Text())
+			}
+			// Every delimiter the dialect opens must be closed, or the identifier
+			// runs on into the rest of the statement.
+			if strings.Count(clause.Text(), "[") != strings.Count(clause.Text(), "]") {
+				t.Fatalf("%s: unbalanced brackets: %q", d.Name(), clause.Text())
+			}
+			if strings.Count(clause.Text(), "`")%2 != 0 {
+				t.Fatalf("%s: odd number of backticks: %q", d.Name(), clause.Text())
+			}
+			if strings.Count(clause.Text(), `"`)%2 != 0 {
+				t.Fatalf("%s: odd number of double quotes: %q", d.Name(), clause.Text())
+			}
 		}
 	})
 }

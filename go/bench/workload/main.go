@@ -23,7 +23,11 @@ var columns = []any{
 var filterJSON = []byte(`{"and":[{"available":true},{"price":{"gte":10,"lte":500}},{"or":[{"and":[{"category":"electronics"},{"or":[{"brand":{"in":["Apple","Samsung","Google"]}},{"and":[{"brand":"Other"},{"rating":{"gte":4.5}},{"reviews_count":{"gte":100}}]}]}]},{"and":[{"category":"clothing"},{"or":[{"and":[{"attributes.gender":"unisex"},{"attributes.size":{"in":["S","M","L"]}}]},{"and":[{"attributes.style":{"like":"%casual%"}},{"discount_percentage":{"gte":20}}]}]}]},{"and":[{"category":"books"},{"or":[{"genre":{"in":["fiction","mystery","sci-fi"]}},{"and":[{"genre":"non-fiction"},{"metadata.bestseller":true}]}]},{"language":{"in":["english","spanish"]}}]}]}]}`)
 
 func once(i int) (int, error) {
-	where, err := sqlb.CompileFilterJSON(filterJSON)
+	filter, err := sqlb.DecodeFilter(filterJSON)
+	if err != nil {
+		return 0, err
+	}
+	where, err := sqlb.CompileFilter(filter)
 	if err != nil {
 		return 0, err
 	}

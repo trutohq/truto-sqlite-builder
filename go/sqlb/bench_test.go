@@ -1,7 +1,6 @@
 package sqlb
 
 import (
-	"encoding/json"
 	"strconv"
 	"sync"
 	"testing"
@@ -205,7 +204,11 @@ func BenchmarkCompileFilterJSONRealistic(b *testing.B) {
 	b.SetBytes(int64(len(realisticFilterJSON)))
 	b.ReportAllocs()
 	for b.Loop() {
-		frag, err := CompileFilterJSON(realisticFilterJSON)
+		filter, err := DecodeFilter(realisticFilterJSON)
+		if err != nil {
+			b.Fatal(err)
+		}
+		frag, err := CompileFilter(filter)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -218,8 +221,8 @@ func BenchmarkCompileFilterJSONRealistic(b *testing.B) {
 func BenchmarkFilterDecodeJSONOnly(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		f := NewFilter()
-		if err := json.Unmarshal(realisticFilterJSON, f); err != nil {
+		f, err := DecodeFilter(realisticFilterJSON)
+		if err != nil {
 			b.Fatal(err)
 		}
 		sink(f)

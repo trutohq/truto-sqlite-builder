@@ -23,6 +23,7 @@ import (
 // before emitting.
 
 type compileCtx struct {
+	dialect       Dialect
 	depth         int
 	operatorCount int
 	values        []any
@@ -30,6 +31,16 @@ type compileCtx struct {
 	// scratch holds the field expression while its operator clauses are emitted,
 	// since a JSON path renders json_extract(…) once per clause.
 	scratch []byte
+}
+
+// bind records a value and writes its bind marker.
+//
+// The marker is written AFTER the append so that a numbered dialect gets the
+// position the value actually occupies. On the default `?` dialect the number
+// is ignored and this is the same byte it always was.
+func (c *compileCtx) bind(v any) {
+	c.values = append(c.values, v)
+	c.buf = c.dialect.appendPlaceholder(c.buf, len(c.values))
 }
 
 func (c *compileCtx) countOperator() error {
@@ -42,14 +53,60 @@ func (c *compileCtx) countOperator() error {
 
 // CompileFilter compiles a filter to a parenthesised WHERE clause with its
 // bound values. Port of compileFilter (src/filter.ts:417).
+//
+// It compiles for SQLite; use [Dialect.CompileWhere] for another database.
 func CompileFilter(f *Filter) (Fragment, error) {
+	clause, err := SQLite.CompileWhere(f)
+	if err != nil {
+		return Fragment{}, err
+	}
+	return Fragment{text: clause.text, values: clause.values}, nil
+}
+
+// Clause is a compiled WHERE clause and the values bound to it, in placeholder
+// order. It is what [Dialect.CompileWhere] returns.
+//
+// It is deliberately NOT a [Fragment], and that is the whole point of having a
+// second type. A Postgres or MSSQL placeholder carries its absolute position in
+// its own text — `$1`, `@p1` — so splicing two independently compiled clauses
+// into one statement would need renumbering, and a renumbering that goes wrong
+// binds every value to the wrong column while producing SQL that still runs.
+// Rather than police that at run time, a Clause simply has no way into [Q],
+// [Join] or [Idents]: the caller assembles the statement, which is what Envoy's
+// connectors already do (e.g. pgconn/postgres.go:148-170).
+type Clause struct {
+	text    string
+	values  []any
+	dialect Dialect
+}
+
+// Text returns the WHERE clause, without the WHERE keyword.
+func (c Clause) Text() string { return c.text }
+
+// Values returns the bound values in placeholder order. The slice aliases the
+// clause's own storage and must not be modified.
+func (c Clause) Values() []any { return c.values }
+
+// Dialect returns the dialect the clause was compiled for.
+func (c Clause) Dialect() Dialect { return c.dialect }
+
+// CompileWhere is [CompileFilter] in this dialect's SQL.
+//
+// Everything that decides which ROWS match — operator semantics, clause order,
+// the truthiness of `exists`, what an empty filter means, the identifier
+// charset — is identical across dialects and is the reference's. Only the
+// spelling changes: the bind marker, the identifier quote, and how `ilike`,
+// `regex` and a JSON path are written.
+func (d Dialect) CompileWhere(f *Filter) (Clause, error) {
+	d = d.resolve()
 	ctx := compileCtx{
-		buf:    make([]byte, 0, 256),
-		values: make([]any, 0, 16),
+		dialect: d,
+		buf:     make([]byte, 0, 256),
+		values:  make([]any, 0, 16),
 	}
 	ctx.buf = append(ctx.buf, '(')
 	if err := compileFilterInto(f, &ctx, ""); err != nil {
-		return Fragment{}, err
+		return Clause{}, err
 	}
 	ctx.buf = append(ctx.buf, ')')
 
@@ -59,11 +116,11 @@ func CompileFilter(f *Filter) (Fragment, error) {
 	// operator limits bound each piece, this bounds the aggregate for callers
 	// using CompileFilter standalone. src/filter.ts:430.
 	if length, over := exceedsUTF16(text, MaxQueryLength); over {
-		return Fragment{}, fmt.Errorf("Compiled filter too long: %d bytes (max: %d)",
+		return Clause{}, fmt.Errorf("Compiled filter too long: %d bytes (max: %d)",
 			length, MaxQueryLength)
 	}
 
-	return Fragment{text: text, values: ctx.values}, nil
+	return Clause{text: text, values: ctx.values, dialect: d}, nil
 }
 
 // countClauses reports how many clauses a filter node will emit, so the emitter
@@ -225,15 +282,20 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 		if err := validateIdent(column); err != nil {
 			return err
 		}
+		if isPath && !ctx.dialect.SupportsJSONPath() {
+			return unsupportedJSONPath(field)
+		}
 
 		ctx.buf = append(ctx.buf, '(')
 		if isPath {
-			ctx.buf = append(ctx.buf, "json_extract("...)
+			ctx.buf = append(ctx.buf, ctx.dialect.jsonExtract...)
+			ctx.buf = append(ctx.buf, '(')
 		}
-		ctx.buf = appendQualified(ctx.buf, alias, column)
+		ctx.buf = appendQualified(ctx.buf, alias, column, ctx.dialect.quote)
 		if isPath {
-			ctx.buf = append(ctx.buf, ", ?)"...)
-			ctx.values = append(ctx.values, path)
+			ctx.buf = append(ctx.buf, ", "...)
+			ctx.bind(path)
+			ctx.buf = append(ctx.buf, ')')
 		}
 
 		if scalar == nil {
@@ -244,8 +306,9 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 		if err != nil {
 			return err
 		}
-		ctx.values = append(ctx.values, v)
-		ctx.buf = append(ctx.buf, " = ?)"...)
+		ctx.buf = append(ctx.buf, " = "...)
+		ctx.bind(v)
+		ctx.buf = append(ctx.buf, ')')
 		return nil
 	}
 
@@ -267,19 +330,30 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 	if err := validateIdent(column); err != nil {
 		return err
 	}
+	if isPath && !ctx.dialect.SupportsJSONPath() {
+		return unsupportedJSONPath(field)
+	}
 
 	ctx.scratch = ctx.scratch[:0]
 	if isPath {
-		ctx.scratch = append(ctx.scratch, "json_extract("...)
+		ctx.scratch = append(ctx.scratch, ctx.dialect.jsonExtract...)
+		ctx.scratch = append(ctx.scratch, '(')
 	}
-	ctx.scratch = appendQualified(ctx.scratch, alias, column)
+	ctx.scratch = appendQualified(ctx.scratch, alias, column, ctx.dialect.quote)
 	if isPath {
-		ctx.scratch = append(ctx.scratch, ", ?)"...)
 		// The path is bound ONCE even though the expression may be rendered into
-		// several clauses. That misalignment is the reference's
-		// (src/filter.ts:169-176) and is preserved; see
+		// several clauses. On the `?` dialects that is the reference's
+		// misalignment (src/filter.ts:169-176), preserved deliberately; see
 		// TestFilter_JSONPathMultiOperatorMisalignment.
+		//
+		// A NUMBERED dialect does not have the bug, and not because anything was
+		// fixed: $1 repeated in three clauses refers to the same bound value, so
+		// binding once is already right. Same code, different spelling, different
+		// correctness — which is why the misalignment test is SQLite-only.
+		ctx.scratch = append(ctx.scratch, ", "...)
 		ctx.values = append(ctx.values, path)
+		ctx.scratch = ctx.dialect.appendPlaceholder(ctx.scratch, len(ctx.values))
+		ctx.scratch = append(ctx.scratch, ')')
 	}
 	fieldExpr := ctx.scratch
 
@@ -343,11 +417,11 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 		if err != nil {
 			return err
 		}
-		ctx.values = append(ctx.values, v)
 		ctx.buf = append(ctx.buf, fieldExpr...)
 		ctx.buf = append(ctx.buf, ' ')
 		ctx.buf = append(ctx.buf, comparator(op)...)
-		ctx.buf = append(ctx.buf, " ?"...)
+		ctx.buf = append(ctx.buf, ' ')
+		ctx.bind(v)
 		return nil
 
 	case "ne":
@@ -360,8 +434,8 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 		if err != nil {
 			return err
 		}
-		ctx.values = append(ctx.values, v)
-		ctx.buf = append(ctx.buf, " <> ?"...)
+		ctx.buf = append(ctx.buf, " <> "...)
+		ctx.bind(v)
 		return nil
 
 	case "in", "nin":
@@ -391,12 +465,11 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 			if i > 0 {
 				ctx.buf = append(ctx.buf, ',')
 			}
-			ctx.buf = append(ctx.buf, '?')
 			v, err := Value(item)
 			if err != nil {
 				return err
 			}
-			ctx.values = append(ctx.values, v)
+			ctx.bind(v)
 		}
 		ctx.buf = append(ctx.buf, ')')
 		return nil
@@ -417,19 +490,34 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 			return fmt.Errorf("%s pattern too long: %d characters (max: %d)",
 				name, length, MaxPatternLength)
 		}
-		ctx.values = append(ctx.values, pattern)
-		ctx.buf = append(ctx.buf, fieldExpr...)
+		clause := opClause{mid: " LIKE "}
 		switch op {
-		case "like":
-			ctx.buf = append(ctx.buf, " LIKE ?"...)
 		case "ilike":
-			ctx.buf = append(ctx.buf, " LIKE ? COLLATE NOCASE"...)
-		default:
-			ctx.buf = append(ctx.buf, " REGEXP ?"...)
+			clause = ctx.dialect.ilike
+		case "regex":
+			clause = ctx.dialect.regex
 		}
+		// A dialect that cannot spell the operator errors rather than emitting
+		// the nearest thing. T-SQL has no REGEXP, and silently downgrading it to
+		// LIKE would return a different set of rows with no sign that it had.
+		if !clause.supported() {
+			return fmt.Errorf("%s operator is not supported by the %s dialect",
+				name, ctx.dialect.name)
+		}
+		ctx.buf = append(ctx.buf, clause.pre...)
+		ctx.buf = append(ctx.buf, fieldExpr...)
+		ctx.buf = append(ctx.buf, clause.mid...)
+		ctx.bind(pattern)
+		ctx.buf = append(ctx.buf, clause.post...)
 		return nil
 	}
 	return nil
+}
+
+// unsupportedJSONPath is sqlfilter's message verbatim (sqlfilter.go:116), so a
+// task that already handles it keeps matching after the swap.
+func unsupportedJSONPath(field string) error {
+	return fmt.Errorf("JSON path filters are not supported by this database: %s", field)
 }
 
 func comparator(op string) string {
@@ -447,13 +535,14 @@ func comparator(op string) string {
 
 // appendQualified writes `alias."column"`, or just `"column"` when there is no
 // alias. The alias is deliberately NOT quoted, matching src/filter.ts:122-124;
-// isValidAlias is what makes that safe.
-func appendQualified(buf []byte, alias, column string) []byte {
+// isValidAlias is what makes that safe. That holds in every dialect: the alias
+// is a bare [A-Za-z_][A-Za-z0-9_]* in all of them.
+func appendQualified(buf []byte, alias, column string, q quoteStyle) []byte {
 	if alias != "" {
 		buf = append(buf, alias...)
 		buf = append(buf, '.')
 	}
-	return appendQuotedIdent(buf, column)
+	return appendQuotedIdent(buf, column, q)
 }
 
 // splitJSONPath implements isJsonPath + compileJsonPath (src/filter.ts:49-72)

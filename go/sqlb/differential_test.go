@@ -197,7 +197,11 @@ func runCase(t *testing.T, c diffCase) diffResult {
 	t.Helper()
 	switch c.Kind {
 	case "filter":
-		frag, err := CompileFilterJSON(c.Filter)
+		filter, err := DecodeFilter(c.Filter)
+		if err != nil {
+			return diffResult{Error: err.Error()}
+		}
+		frag, err := CompileFilter(filter)
 		if err != nil {
 			return diffResult{Error: err.Error()}
 		}
@@ -260,16 +264,21 @@ func generateCases(n int, seed uint64) []diffCase {
 }
 
 // fieldNames mixes valid, invalid and JSON-path names so the identifier and
-// path validation paths are exercised as hard as the happy path. Pure integer
-// keys are deliberately absent: JavaScript's [[OwnPropertyKeys]] emits those
-// first in numeric order, so JSON.parse would hand the reference a different
-// key order than the one on the wire. See GOTCHAS.md.
+// path validation paths are exercised as hard as the happy path.
+//
+// Pure INTEGER keys ("0", "7") used to be excluded here: JavaScript's
+// [[OwnPropertyKeys]] emits array-index keys first in ascending numeric order,
+// so JSON.parse hands the reference a different key order than the one on the
+// wire, and sqlb's own decoder did not reproduce that. Since decoding moved to
+// jsorder (D-0023) it does, so the exclusion is gone — which is what proves the
+// rule is now implemented rather than merely avoided.
 var fieldNames = []string{
 	"status", "age", "user_name", "_private", "A1",
 	"profile.city", "a.b.c", "metadata.deleted", "deep.a.b.c.d",
 	"user-name", "user name", "user.", ".name", "a..b", "",
 	"name--", "name'", `name"`, "name;", "name)", "SELECT", "ORDER",
 	"a.b--", "a.'b", "a. b", strings.Repeat("x", 300), strings.Repeat("y", 255),
+	"0", "7", "10", "2", "01", "4294967295", "-1",
 }
 
 var aliasNames = []string{"t2", "orders", "_x", "users", "1bad", "bad-alias", "a.b", "", "x"}
@@ -277,6 +286,33 @@ var aliasNames = []string{"t2", "orders", "_x", "users", "1bad", "bad-alias", "a
 var opNames = []string{
 	"gt", "gte", "lt", "lte", "ne", "in", "nin", "like", "ilike", "regex",
 	"exists", "and", "or", "unknown", "GT", "$gt",
+}
+
+// bigNumbers are literals JSON.parse cannot represent exactly. They exist in
+// the corpus because the bound value has to match what the reference binds
+// AFTER that rounding, not the digits on the wire — see DIVERGENCES J-01.
+var bigNumbers = []json.RawMessage{
+	json.RawMessage("9007199254740993"),         // 2^53+1, rounds DOWN in JSON.parse
+	json.RawMessage("1234567890123456789"),      // rounds to …800
+	json.RawMessage("12345678901234567890"),     // past int64 entirely
+	json.RawMessage("-9007199254740993"),        //
+	json.RawMessage("1e21"),                     // where JS flips to exponent form
+	json.RawMessage("0.1"),                      //
+	json.RawMessage("1.0"),                      // integral: must bind as 1, not 1.0
+	json.RawMessage("-0"),                       //
+	json.RawMessage("1e-7"),                     // where JS flips the other way
+	json.RawMessage("9223372036854775807"),      // int64 max, not representable
+	json.RawMessage("123456789012345678901234"), //
+}
+
+// genFilterScalar is genScalar plus the number literals only the FILTER path
+// can carry. The SQL path cannot: its arguments are Go values handed straight
+// to Q, so a raw JSON literal has no meaning there.
+func genFilterScalar(r *rand.Rand) any {
+	if r.IntN(12) == 0 {
+		return bigNumbers[r.IntN(len(bigNumbers))]
+	}
+	return genScalar(r)
 }
 
 func genScalar(r *rand.Rand) any {
@@ -313,7 +349,7 @@ func genOpValue(r *rand.Rand, op string) any {
 		case 2:
 			items := make([]any, r.IntN(4)+1)
 			for i := range items {
-				items[i] = genScalar(r)
+				items[i] = genFilterScalar(r)
 			}
 			return items
 		case 3:
@@ -326,14 +362,14 @@ func genOpValue(r *rand.Rand, op string) any {
 			return []any{1, 2, 3}
 		}
 	case "exists":
-		return genScalar(r)
+		return genFilterScalar(r)
 	case "like", "ilike", "regex":
 		if r.IntN(4) == 0 {
-			return genScalar(r)
+			return genFilterScalar(r)
 		}
 		return "%" + fmt.Sprintf("p%d", r.IntN(50)) + "%"
 	}
-	return genScalar(r)
+	return genFilterScalar(r)
 }
 
 // genFilterNode builds a filter as an ordered list of key/value pairs, then
@@ -375,7 +411,7 @@ func genFilterNode(r *rand.Rand, depth int) string {
 		case pick < 6:
 			writeJSONString(&b, fieldNames[r.IntN(len(fieldNames))])
 			b.WriteByte(':')
-			writeJSONValue(&b, genScalar(r))
+			writeJSONValue(&b, genFilterScalar(r))
 		default:
 			writeJSONString(&b, fieldNames[r.IntN(len(fieldNames))])
 			b.WriteString(":{")

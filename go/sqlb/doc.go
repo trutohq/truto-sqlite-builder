@@ -1,4 +1,4 @@
-// Package sqlb is a safe, zero-dependency SQL builder for SQLite.
+// Package sqlb is a safe SQL builder for SQLite, Postgres, MySQL and SQL Server.
 //
 // It is a Go port of @truto/sqlite-builder (TypeScript). The trust model is
 // unchanged: the TEXT of a query is code and must originate from the developer;
@@ -30,6 +30,23 @@
 //
 // [Raw] remains the single explicit escape hatch, exactly as sql.raw() is in the
 // TypeScript. Whatever string reaches it becomes SQL verbatim.
+//
+// # Filters, JSON and dialects
+//
+// A filter arriving as JSON is decoded by [DecodeFilter], which is a thin layer
+// over github.com/trutohq/jsorder — this package does not carry a JSON decoder
+// of its own, because the organisation already has one and two of those is one
+// duplicated decision.
+//
+// [CompileFilter] compiles for SQLite and returns a composable [Fragment].
+// [Dialect.CompileWhere] compiles for any of [SQLite], [Postgres], [MySQL] and
+// [MSSQL] and returns a [Clause], which is deliberately not composable: a
+// numbered placeholder carries its absolute position, so splicing two of them
+// would silently bind every value to the wrong column.
+//
+// A Dialect changes only how SQL is spelled. Everything that decides which ROWS
+// match is the reference's and is the same in all four — including that an
+// empty filter is [ErrEmptyFilter], never "match everything".
 //
 // See DIVERGENCES.md in docs/go-port/wiki for the full list of behavioural
 // differences, and README.md in the parent directory for the rest.

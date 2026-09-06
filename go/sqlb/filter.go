@@ -27,6 +27,26 @@ var (
 	errConditionType   = errors.New("Condition must be a value or operator object")
 )
 
+// ErrEmptyFilter is what compiling a filter with no conditions returns.
+//
+// It is exported so a caller can decide, VISIBLY and at its own call site, what
+// an empty filter means for it. goenvoy/internal/sqlfilter/sqlfilter.go:83
+// returns "" for one, which its connectors turn into a statement with no WHERE
+// — "match everything". This package treats it as an error, and that difference
+// changes ROWS, not syntax: swapped silently, a DELETE removes every row in the
+// table or none. It is deliberately NOT a Dialect setting and not an option.
+//
+// The unambiguous test is on the filter, before compiling:
+//
+//	if filter == nil || filter.Len() == 0 {
+//		// no WHERE clause, or refuse the request — the caller's call
+//	}
+//
+// errors.Is(err, ErrEmptyFilter) also matches, but note it fires for a NESTED
+// empty filter too, so it cannot tell "the request had no filter" from
+// "{"and":[{}]}".
+var ErrEmptyFilter = errFilterEmpty
+
 // Set records key in order, replacing an existing entry in place.
 //
 // Replacing in place is what a JavaScript object does: assigning to an existing
