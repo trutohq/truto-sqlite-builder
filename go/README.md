@@ -316,7 +316,19 @@ marked `TYPE-ENFORCED` in the source:
 
 `go test -run TestDifferential` generates a deterministic corpus of filters and
 queries, runs it through `bun` against `../src`, and diffs text, bound values
-and error messages. It skips when `bun` is absent.
+and error messages. It skips when `bun` is absent — and
+**`TRUTO_DIFFERENTIAL=required` turns that skip into a failure** (`D-0079`), so
+a CI container with no `bun` cannot report green having verified nothing.
+
+**The runner is `github.com/trutohq/differential`, not local code.** Case
+generation, the `bun` subprocess, the `TZ=UTC` pin, result diffing, artifacts
+and the reproduction hint live there; this package keeps only the corpus and its
+definition of agreement. The extraction happened because `jsorder` had grown a
+second copy of the same loop and `gotruto` was about to make a third (`D-0013`),
+and it is verified to be behaviour-preserving two ways:
+`TestCorpusBytesAreUnchanged` pins the SHA-256 of the generated corpus for all
+six seeds below, and the six runs reproduce the pre-extraction
+output-agreement / error-agreement split exactly, case for case.
 
 **4,000 cases per run by default. The current tree was diffed over 150,000
 generated cases across six seeds after the empty-filter change (`D-0032`),
@@ -326,6 +338,81 @@ port as a whole, with zero mismatches.** Tune it:
 ```sh
 SQLB_DIFF_CASES=25000 SQLB_DIFF_SEED=7 go test -run TestDifferential ./sqlb
 ```
+
+| seed | cases | agreed on output | agreed on the error | mismatched |
+|---|---|---|---|---|
+| 20816 | 25,000 | 10,179 | 14,821 | 0 |
+| 1 | 25,000 | 10,122 | 14,878 | 0 |
+| 2 | 25,000 | 10,161 | 14,839 | 0 |
+| 3 | 25,000 | 10,114 | 14,886 | 0 |
+| 7 | 25,000 | 10,219 | 14,781 | 0 |
+| 20260912 | 25,000 | 10,104 | 14,896 | 0 |
+
+Every figure in that table is identical before and after the extraction, and
+still identical after the per-value type tag below was added. The wire format
+changed from a single JSON array to JSONL, which is why `differential/run.ts`
+changed too; the corpus bytes per case did not.
+
+#### Bound values carry their SQLite type
+
+Each result line also carries `vtypes`: one tag per bound value saying what
+SQLite would **store**. It exists because JSON cannot express the distinction
+and the comparison therefore could not see it — `json.Marshal` renders
+`int64(1)` and `float64(1)` both as `1`, and `JSON.parse("1.0")` is `1`.
+Changing `sqlValue`'s `case int` to return `float64(x)`, which binds every
+integer argument as a **REAL** instead of an INTEGER, passed 25,000 cases with
+identical bucket counts. In SQLite that is not cosmetic: `typeof()` and
+`quote()` differ, and a value read back re-serialises as `1.0`.
+
+`int` is `jsNumber`'s contract — an integral number inside the
+exactly-representable range binds as INTEGER, everything else as REAL —
+computed from the reference's value on one side and from the Go **static type**
+on the other, so an integral `float64` is a mismatch rather than a coincidence.
+That fault now produces 1,533 mismatches at 25,000 cases. The tag cost nothing
+measurable: five runs each way, medians 0.78 s and 0.78 s.
+
+#### Two more corpora, for what the generator cannot reach
+
+The generated corpus reaches **24** of the reference's distinct error messages
+and cannot reach the rest *by construction* — `genFilterNode` never emits an
+array as a field value, never a non-object filter, never nesting past its own
+cap — so a one-character change to any of the others is invisible at any number
+of cases. Deleting the trailing `.` from `Field '%s' cannot have array value.
+Use logical operators 'and'/'or' instead.` was invisible at 25,000.
+
+Rather than widen the generator, which would silently retire the pinned corpus
+above, there are two more:
+
+| | |
+|---|---|
+| `TestDifferentialValueTypes` | 2,000 generated cases over the argument tags the main corpus documents but never emits: `date`, `blob`, a `Uint8Array` passed as a plain value, `sql.blob(null)`, and a non-SQL-able object. This is what finally executes `formatDate`'s two "confirmed against the reference" quirks — the year is **not** zero-padded, everything else is — and it is the only corpus exercising the `TZ=UTC` pin: remove the pin on a non-UTC host and it produces 545 mismatches |
+| `TestDifferentialFilterErrorPaths` | a fixed list of 13 hostile shapes, one per otherwise-unreachable error path: array field value, three flavours of non-object filter, an array whose keys are its indices, `and`/`or` given a non-array, nesting past 10, an empty operator object, more than 100 operators, a compiled filter past 100 KiB, and a query past 100 KiB |
+
+Every one of them agrees with the reference. Two shapes are deliberately
+**excluded** — `{}` and `{"$alias":"not an object"}` — because since `D-0032` a
+top-level empty filter is an INTENDED divergence, and `runCase` reports it as a
+corpus invariant violation rather than as a comparable case.
+
+#### Coverage floors
+
+All three corpora fail when they stop reaching things, through the runner's
+`Classifier.Observed` seam:
+
+- each case kind must be at least a fifth of the run, and each outcome label at
+  least a tenth — *a corpus that has quietly become all-errors passes while
+  testing almost nothing*;
+- the run must reach at least 20 distinct reference error messages (the default
+  4,000 cases reach 21–24 depending on the seed; 25,000 reach 22–24);
+- `sameError`'s one deliberately-loose comparison — `Unsupported value type:`,
+  where the reference reports JavaScript's `typeof` and Go reports its own type
+  name — must actually fire. **It never fired in 150,000 cases**, so the single
+  place the comparison is loosened was itself untested. The two new corpora
+  reach it on both the `sql` and the `filter` path.
+
+One consequence worth knowing before it surprises you: **a run with fewer than
+the default 4,000 cases fails the error-message floor.** That is deliberate — a
+reduced `SQLB_DIFF_CASES` is not a gate — and the failure says so.
+`SQLB_DIFF_CASES=1 TRUTO_DIFFERENTIAL=required` used to report green.
 
 The corpus is deliberately hostile: invalid identifiers, oversized patterns,
 unterminated literals, empty and 1000-element `IN` lists, alias blocks with
@@ -578,7 +665,9 @@ go/
 │   ├── dialect_test.go
 │   ├── jsonfilter_test.go
 │   ├── security_adversarial_test.go
-│   ├── differential_test.go     generates the corpus, diffs against bun
+│   ├── differential_test.go     three corpora, what counts as agreement,
+│   │                            and the coverage floors
+│   ├── corpus_bytes_test.go     pins the corpus SHA-256 per seed
 │   ├── fuzz_test.go
 │   └── bench_test.go
 ├── differential/run.ts          the reference side of the differential harness
@@ -590,7 +679,9 @@ go/
 
 ## Dependencies
 
-One: **`github.com/trutohq/jsorder`**, for order-preserving JSON decoding.
+One at runtime: **`github.com/trutohq/jsorder`**, for order-preserving JSON
+decoding. One in tests only: **`github.com/trutohq/differential`**, the
+organisation's differential runner.
 
 This package was zero-dependency and no longer is, and that was spent
 deliberately (D-0023). It had its own decoder; `jsorder` is the organisation's,
@@ -610,7 +701,32 @@ replace github.com/trutohq/jsorder => ../../jsorder
 
 which expects `~/work/jsorder` beside this checkout, on branch
 `feat/jsorder-initial`. Delete the directive and pin a version once it is
-pushed; nothing else about the dependency changes.
+pushed; nothing else about the dependency changes. The same is true of
+
+```
+replace github.com/trutohq/differential => ../../differential
+```
+
+which expects `~/work/differential`.
+
+**It is a test-only dependency, and that does not mean it is invisible
+downstream.** Nothing under `sqlb` outside `*_test.go` imports it, so a module
+that depends on this one can `go build`, `go vet` and `go test ./...` with no
+`replace` for `differential` at all — verified. But **`go mod tidy` cannot**: it
+resolves the test imports of every dependency, and `replace` directives apply
+only from the *main* module, so a downstream consumer gets
+
+```
+go: example.com/consumer imports
+	github.com/trutohq/truto-sqlite-builder/go/sqlb tested by
+	github.com/trutohq/truto-sqlite-builder/go/sqlb.test imports
+	github.com/trutohq/differential: module lookup disabled by GOPROXY=off
+```
+
+until it adds its own `replace` line. An earlier version of this section said
+the dependency "does not reach anyone consuming this package"; that is true of
+the build and false of `go mod tidy`. The cost is one line per downstream module
+and it disappears when `differential` is pushed.
 
 The cost is measured, not asserted — see [Performance](#performance).
 
