@@ -341,3 +341,25 @@ func TestSQLiteCompareValues(t *testing.T) {
 		}
 	}
 }
+
+// An unknown name is SQLite's string literal and is never rendered, so the
+// building block takes no column for it (the legacy compiler has none).
+func TestCompareColumnNeedsNoColumnForAnUnknownName(t *testing.T) {
+	pg, err := Postgres.With(SQLiteAffinity(func(string) ColumnKind { return ColumnUnknown }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := pg.CompareColumn(Fragment{}, "nosuchcol", ColumnUnknown, "=", "nosuchcol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantText(t, f.Text(), "true")
+	f, err = pg.CompareColumn(Fragment{}, "nosuchcol", ColumnUnknown, "in", []any{"x", "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantText(t, f.Text(), "(false OR false)")
+	if _, err := pg.CompareColumn(Fragment{}, "name", ColumnText, "=", "x"); err == nil {
+		t.Fatal("a known column rendered without its reference")
+	}
+}

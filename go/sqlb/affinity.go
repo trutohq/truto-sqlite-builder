@@ -342,9 +342,13 @@ func (d Dialect) CompareColumn(column Fragment, name string, kind ColumnKind, op
 	if d.resolve().affinity == nil {
 		return Fragment{}, fmt.Errorf("sqlb: the %s dialect was not given SQLiteAffinity", d.resolve().name)
 	}
-	col, err := columnText(column)
-	if err != nil {
-		return Fragment{}, err
+	var col []byte
+	if kind != ColumnUnknown {
+		// An unknown name is never rendered: SQLite's literal is answered in Go.
+		var err error
+		if col, err = columnText(column); err != nil {
+			return Fragment{}, err
+		}
 	}
 	c := d.helperCtx()
 	switch op {
