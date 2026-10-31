@@ -31,6 +31,23 @@ type compileCtx struct {
 	// scratch holds the field expression while its operator clauses are emitted,
 	// since a JSON path renders json_extract(…) once per clause.
 	scratch []byte
+
+	// rebindPath binds a JSON path once per USE of the field expression
+	// rather than once per field: the `?` spelling of a numbered dialect's
+	// clause ([Dialect.CompileFilter]), where `$1` used three times is one
+	// value and `?` used three times is three. pathValue is the path the
+	// current field binds.
+	rebindPath bool
+	pathValue  any
+}
+
+// emitField writes the field expression into the clause, binding the JSON
+// path again when the expression is re-used under rebindPath.
+func (c *compileCtx) emitField(fieldExpr []byte, isPath bool) {
+	c.buf = append(c.buf, fieldExpr...)
+	if isPath && c.rebindPath {
+		c.values = append(c.values, c.pathValue)
+	}
 }
 
 // bind records a value and writes its bind marker.
@@ -118,6 +135,10 @@ func (c Clause) IsEmpty() bool { return c.text == "" }
 // spelling changes: the bind marker, the identifier quote, and how `ilike`,
 // `regex` and a JSON path are written.
 func (d Dialect) CompileWhere(f *Filter) (Clause, error) {
+	return d.resolve().compileWhere(f, false)
+}
+
+func (d Dialect) compileWhere(f *Filter, rebindPath bool) (Clause, error) {
 	d = d.resolve()
 
 	// A nil *Filter is the reference's `compileFilter(null)` and still errors.
@@ -147,9 +168,10 @@ func (d Dialect) CompileWhere(f *Filter) (Clause, error) {
 	}
 
 	ctx := compileCtx{
-		dialect: d,
-		buf:     make([]byte, 0, 256),
-		values:  make([]any, 0, 16),
+		dialect:    d,
+		buf:        make([]byte, 0, 256),
+		values:     make([]any, 0, 16),
+		rebindPath: rebindPath,
 	}
 	ctx.buf = append(ctx.buf, '(')
 	if err := compileFilterInto(f, &ctx, ""); err != nil {
@@ -332,6 +354,26 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 		if isPath && !ctx.dialect.SupportsJSONPath() {
 			return unsupportedJSONPath(field)
 		}
+		if isPath && ctx.dialect.sqliteJSON {
+			e, err := ctx.sqliteJSONField(alias, column, path)
+			if err != nil {
+				return err
+			}
+			if scalar == nil {
+				ctx.writeIsNull(e, false)
+				return nil
+			}
+			v, err := Value(scalar)
+			if err != nil {
+				return err
+			}
+			ctx.buf = append(ctx.buf, '(')
+			if err := ctx.writeCompare(e, "=", v); err != nil {
+				return err
+			}
+			ctx.buf = append(ctx.buf, ')')
+			return nil
+		}
 
 		ctx.buf = append(ctx.buf, '(')
 		if isPath {
@@ -380,14 +422,25 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 	if isPath && !ctx.dialect.SupportsJSONPath() {
 		return unsupportedJSONPath(field)
 	}
+	// Under SQLiteJSONPath the field is not a prefix every clause starts with
+	// but a value each clause reads under SQLite's comparison rules, so it is
+	// handed to the operators whole (sj) instead of rendered once here.
+	var sj *jsonExpr
+	if isPath && ctx.dialect.sqliteJSON {
+		e, err := ctx.sqliteJSONField(alias, column, path)
+		if err != nil {
+			return err
+		}
+		sj = &e
+	}
 
 	ctx.scratch = ctx.scratch[:0]
-	if isPath {
+	if isPath && sj == nil {
 		ctx.scratch = append(ctx.scratch, ctx.dialect.jsonExtract...)
 		ctx.scratch = append(ctx.scratch, '(')
 	}
 	ctx.scratch = appendQualified(ctx.scratch, alias, column, ctx.dialect.quote)
-	if isPath {
+	if isPath && sj == nil {
 		// The path is bound ONCE even though the expression may be rendered into
 		// several clauses. On the `?` dialects that is the reference's
 		// misalignment (src/filter.ts:169-176), preserved deliberately; see
@@ -398,8 +451,14 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 		// binding once is already right. Same code, different spelling, different
 		// correctness — which is why the misalignment test is SQLite-only.
 		ctx.scratch = append(ctx.scratch, ", "...)
-		ctx.values = append(ctx.values, path)
-		ctx.scratch = ctx.dialect.appendPlaceholder(ctx.scratch, len(ctx.values))
+		if ctx.rebindPath {
+			// Bound at each use instead (emitField).
+			ctx.pathValue = path
+			ctx.scratch = append(ctx.scratch, '?')
+		} else {
+			ctx.values = append(ctx.values, path)
+			ctx.scratch = ctx.dialect.appendPlaceholder(ctx.scratch, len(ctx.values))
+		}
 		ctx.scratch = append(ctx.scratch, ')')
 	}
 	fieldExpr := ctx.scratch
@@ -410,8 +469,12 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 		if err := ctx.countOperator(); err != nil {
 			return err
 		}
+		if sj != nil {
+			ctx.writeIsNull(*sj, jsTruthy(existsValue))
+			return nil
+		}
 		ctx.buf = append(ctx.buf, '(')
-		ctx.buf = append(ctx.buf, fieldExpr...)
+		ctx.emitField(fieldExpr, isPath)
 		if jsTruthy(existsValue) {
 			ctx.buf = append(ctx.buf, " IS NOT NULL)"...)
 		} else {
@@ -442,7 +505,7 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 			ctx.buf = append(ctx.buf, " AND "...)
 		}
 		written++
-		if err := compileOperatorInto(e.name, e.value, fieldExpr, ctx); err != nil {
+		if err := compileOperatorInto(e.name, e.value, fieldExpr, isPath, sj, ctx); err != nil {
 			return err
 		}
 	}
@@ -457,14 +520,17 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 
 func emits(op string) bool { return op != "and" && op != "or" }
 
-func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx) error {
+func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj *jsonExpr, ctx *compileCtx) error {
 	switch op {
 	case "gt", "gte", "lt", "lte":
 		v, err := Value(value)
 		if err != nil {
 			return err
 		}
-		ctx.buf = append(ctx.buf, fieldExpr...)
+		if sj != nil {
+			return ctx.writeCompare(*sj, comparator(op), v)
+		}
+		ctx.emitField(fieldExpr, isPath)
 		ctx.buf = append(ctx.buf, ' ')
 		ctx.buf = append(ctx.buf, comparator(op)...)
 		ctx.buf = append(ctx.buf, ' ')
@@ -472,7 +538,18 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 		return nil
 
 	case "ne":
-		ctx.buf = append(ctx.buf, fieldExpr...)
+		if sj != nil {
+			if isNullish(value) {
+				ctx.writeIsNull(*sj, true)
+				return nil
+			}
+			v, err := Value(value)
+			if err != nil {
+				return err
+			}
+			return ctx.writeCompare(*sj, "<>", v)
+		}
+		ctx.emitField(fieldExpr, isPath)
 		if isNullish(value) {
 			ctx.buf = append(ctx.buf, " IS NOT NULL"...)
 			return nil
@@ -503,7 +580,18 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 		// The reference builds a fragment with sql.in() and copies its values
 		// across; the placeholder text is a function of the length alone, so it is
 		// emitted directly and only the conversion is kept.
-		ctx.buf = append(ctx.buf, fieldExpr...)
+		if sj != nil {
+			converted := make([]any, len(items))
+			for i, item := range items {
+				v, err := Value(item)
+				if err != nil {
+					return err
+				}
+				converted[i] = v
+			}
+			return ctx.writeIn(*sj, converted, op == "nin")
+		}
+		ctx.emitField(fieldExpr, isPath)
 		if op == "nin" {
 			ctx.buf = append(ctx.buf, " NOT"...)
 		}
@@ -537,6 +625,35 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 			return fmt.Errorf("%s pattern too long: %d characters (max: %d)",
 				name, length, MaxPatternLength)
 		}
+		if op != "regex" && ctx.dialect.sqliteLike {
+			e := jsonExpr{col: fieldExpr, toJSON: true}
+			if sj != nil {
+				e = *sj
+			}
+			ctx.writeLike(e, pattern, false)
+			return nil
+		}
+		if sj != nil {
+			// A JSON path without SQLiteLike: this dialect's own operator over
+			// SQLite's text of the value.
+			clause := ctx.dialect.ilike
+			switch op {
+			case "like":
+				clause = opClause{mid: " LIKE "}
+			case "regex":
+				clause = ctx.dialect.regex
+			}
+			if !clause.supported() {
+				return fmt.Errorf("%s operator is not supported by the %s dialect",
+					name, ctx.dialect.name)
+			}
+			ctx.buf = append(ctx.buf, clause.pre...)
+			ctx.writeSQLiteText(*sj)
+			ctx.buf = append(ctx.buf, clause.mid...)
+			ctx.bind(pattern)
+			ctx.buf = append(ctx.buf, clause.post...)
+			return nil
+		}
 		clause := opClause{mid: " LIKE "}
 		switch op {
 		case "ilike":
@@ -552,7 +669,7 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, ctx *compileCtx
 				name, ctx.dialect.name)
 		}
 		ctx.buf = append(ctx.buf, clause.pre...)
-		ctx.buf = append(ctx.buf, fieldExpr...)
+		ctx.emitField(fieldExpr, isPath)
 		ctx.buf = append(ctx.buf, clause.mid...)
 		ctx.bind(pattern)
 		ctx.buf = append(ctx.buf, clause.post...)

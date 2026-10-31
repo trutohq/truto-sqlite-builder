@@ -172,7 +172,7 @@ Four dialects, and a Dialect decides exactly three things:
 | | bind marker | identifier | `ilike` | `regex` | JSON path |
 |---|---|---|---|---|---|
 | `SQLite` (default) | `?` | `"x"` | `LIKE ? COLLATE NOCASE` | `REGEXP ?` | `json_extract(x, ?)` |
-| `Postgres` | `$1` | `"x"` | `ILIKE $1` | `~ $1` | **error** |
+| `Postgres` | `$1` | `"x"` | `ILIKE $1` | `~ $1` | **error** (see Options) |
 | `MySQL` | `?` | `` `x` `` | `LIKE ?` | `REGEXP ?` | **error** |
 | `MSSQL` | `@p1` | `[x]` | `LOWER(x) LIKE LOWER(@p1)` | **error** | `JSON_VALUE(x, @p1)` |
 
@@ -224,6 +224,66 @@ MSSQL     ((JSON_VALUE([a], @p1) > @p2 AND JSON_VALUE([a], @p1) < @p3))  3 value
 ```
 
 `TestJSONPathMisalignmentIsPositionalOnly` pins both halves.
+
+### Composing for a numbered database: `Dialect.CompileFilter` and `Render` (2026-10-31)
+
+A program that builds every statement with `Q` and runs it on Postgres needs
+two things `CompileWhere` does not give it: a filter compiled in Postgres's
+spelling that still **composes** inside `Q`, and one step at the end that
+numbers the finished statement. Both are here, so nobody writes a second
+`?` scanner (Truto had one; it is deleted, D-0873):
+
+```go
+where, err := sqlb.Postgres.CompileFilter(filter)   // a Fragment, `?` markers
+stmt, err := sqlb.Q("SELECT * FROM t WHERE ?", where)
+text, values, err := sqlb.Postgres.Render(stmt)    // `$1, $2, …`, numbered once
+// or, for a statement you only have as a string:
+text, n, err := sqlb.Postgres.NumberPlaceholders(raw)
+```
+
+The numbering uses `scanSQL`, the same walk `Q`'s integrity check counts with,
+so the `?` that `Q` counted and the `?` that is numbered are the same
+characters. Comments, `'…'`, `"…"`, `` `…` `` and `[…]` are skipped; Postgres's
+dollar-quoted strings and `E'…'` are not recognised, so a statement using them
+must not also carry `?`. A statement mixing `$n` and `?` is refused.
+
+On a numbered dialect, `CompileFilter` binds a JSON path once per **use**, which
+is what the numbered `Clause` already means; on SQLite it is the package
+function, S-01's misalignment included.
+
+### Options: SQLite's answers on Postgres (`Dialect.With`, 2026-10-31)
+
+`Postgres` answers as Postgres does, and Envoy depends on that. A program whose
+data moved from SQLite to Postgres and must keep answering its clients exactly
+as before (Truto, D-0873) asks for SQLite's semantics explicitly:
+
+```go
+pg, err := sqlb.Postgres.With(sqlb.SQLiteLike, sqlb.SQLiteJSONPath)
+```
+
+| Option | Effect on Postgres |
+|---|---|
+| `SQLiteLike` | `like` and `ilike` are SQLite's LIKE: ASCII-only case folding (`COLLATE "C"` — measured: `'É' ILIKE 'é'` is false under it), no escape character, over SQLite's text of the operand (a boolean is `1`/`0`). `regex` is refused, as D1 has no REGEXP. |
+| `SQLiteJSONPath` | `config.a.b` is `json_extract(config, '$.a.b')` with SQLite's typing (true/false are 1/0, JSON null and a missing path NULL, an integer literal inside int64 an INTEGER) and SQLite's storage-class comparison: NULL < numbers < text < blob, so `config.a > 5` is TRUE for every string. Numbers bind as D1 binds them, as REALs; an INTEGER literal is compared with the exact value of the double. `.key` on an array and `[n]` on an object find nothing, as in SQLite. |
+
+`SQLite.With(...)` returns SQLite unchanged (those are its own semantics);
+`MySQL` and `MSSQL` refuse the options. `TestPostgresWithoutOptionsIsUnchanged`
+pins Envoy's `Postgres` byte for byte.
+
+For a compiler outside `CompileFilter` that needs the same rules (Truto's legacy
+query dialect), three building blocks render one comparison, one sort key or
+one LIKE: `Dialect.CompareJSONPath`, `Dialect.OrderByJSONPath`,
+`Dialect.LikeSQLite`. Each refuses a dialect without its option.
+
+What the options do **not** reproduce, by design or as recorded differences
+(Truto's `DIVERGENCES.md` carries the rows): a REAL's text in LIKE (`5.0` vs
+`5`, Truto's O-PG-NUMBER-TEXT, declined); duplicate JSON keys (SQLite reads the
+first, Postgres `json` the last); JSON5 input and a NUL escape (SQLite reads
+them, Postgres refuses the document); whitespace inside an object or array
+compared as text (SQLite minifies it); a JSON number past a double's range
+(SQLite reads Infinity, Postgres refuses); and a malformed path, which SQLite
+reports only when a row's document reaches the bad step and this refuses at
+compile time.
 
 ### An empty filter means every row, and nothing will refuse for you
 

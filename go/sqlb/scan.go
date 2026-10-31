@@ -83,6 +83,21 @@ func exceedsUTF16(s string, max int) (int, bool) {
 // Placeholders and semicolons inside string literals, quoted identifiers,
 // bracket identifiers and comments are invisible to both, as in the reference.
 func scanSQL(s string) (placeholders int, stacked bool) {
+	placeholders, stacked, _, _ = scanSQLAt(s, false)
+	return placeholders, stacked
+}
+
+// scanSQLAt is [scanSQL] that can also report where each placeholder is, for
+// [Dialect.NumberPlaceholders]. One walk serves both, so the `?` that Q counts
+// and the `?` a numbered dialect rewrites are, by construction, the same
+// characters. Positions are collected only when asked: Q's hot path passes
+// false and allocates nothing.
+//
+// When collect is true, at is the byte offset of every code-position `?`, and
+// numbered reports a code-position Postgres `$<digit>` or MSSQL `@p<digit>`
+// marker, so a statement that mixes the two numberings can be refused rather
+// than renumbered into nonsense.
+func scanSQLAt(s string, collect bool) (placeholders int, stacked bool, at []int, numbered bool) {
 	i, n := 0, len(s)
 	seenSemicolon := false
 
@@ -141,6 +156,11 @@ func scanSQL(s string) (placeholders int, stacked bool) {
 		if c < utf8.RuneSelf {
 			if c == '?' {
 				placeholders++
+				if collect {
+					at = append(at, i)
+				}
+			} else if collect && isNumberedMarker(s, i) {
+				numbered = true
 			}
 			if seenSemicolon {
 				if !stacked && !isJSSpaceASCII(c) {
@@ -160,5 +180,17 @@ func scanSQL(s string) (placeholders int, stacked bool) {
 		i += size
 	}
 
-	return placeholders, stacked
+	return placeholders, stacked, at, numbered
+}
+
+// isNumberedMarker reports a `$1` or `@p1` starting at s[i].
+func isNumberedMarker(s string, i int) bool {
+	isDigit := func(j int) bool { return j < len(s) && s[j] >= '0' && s[j] <= '9' }
+	switch s[i] {
+	case '$':
+		return isDigit(i + 1)
+	case '@':
+		return i+1 < len(s) && s[i+1] == 'p' && isDigit(i+2)
+	}
+	return false
 }

@@ -42,6 +42,11 @@ type Dialect struct {
 	// opClause means the dialect cannot express the operator at all.
 	ilike opClause
 	regex opClause
+
+	// sqliteLike and sqliteJSON are the [Option]s [Dialect.With] sets: the
+	// operators answer as SQLite does rather than as this database does.
+	sqliteLike bool
+	sqliteJSON bool
 }
 
 type placeholderStyle uint8
@@ -164,7 +169,10 @@ func (d Dialect) SupportsOperator(op string) bool {
 
 // SupportsJSONPath reports whether a dotted field name compiles to a JSON
 // lookup rather than an error.
-func (d Dialect) SupportsJSONPath() bool { return d.resolve().jsonExtract != "" }
+func (d Dialect) SupportsJSONPath() bool {
+	d = d.resolve()
+	return d.jsonExtract != "" || d.sqliteJSON
+}
 
 // appendPlaceholder writes the bind marker for the n-th bound value, 1-based.
 func (d Dialect) appendPlaceholder(dst []byte, n int) []byte {
