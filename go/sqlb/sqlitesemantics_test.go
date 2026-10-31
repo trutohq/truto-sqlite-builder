@@ -56,8 +56,11 @@ func TestWith(t *testing.T) {
 			t.Errorf("%s.With accepted an option nothing renders there", d.Name())
 		}
 	}
-	if _, err := Postgres.With(Option(64)); err == nil {
+	if _, err := Postgres.With(flagOption(64)); err == nil {
 		t.Error("an unknown option was accepted")
+	}
+	if _, err := Postgres.With(nil); err == nil {
+		t.Error("a nil option was accepted")
 	}
 	pg, err := Postgres.With(SQLiteLike, SQLiteJSONPath)
 	if err != nil {
@@ -243,6 +246,98 @@ func TestParseSQLitePath(t *testing.T) {
 		}
 		if err != nil && !strings.HasPrefix(err.Error(), "bad JSON path: '") {
 			t.Errorf("%q: %v is not SQLite's message", c.path, err)
+		}
+	}
+}
+
+func TestSQLiteAffinityRendering(t *testing.T) {
+	kinds := map[string]ColumnKind{"name": ColumnText, "count": ColumnInteger, "ratio": ColumnReal,
+		"on": ColumnBoolean, "at": ColumnOther}
+	pg, err := Postgres.With(SQLiteLike, SQLiteJSONPath,
+		SQLiteAffinity(func(c string) ColumnKind { return kinds[c] }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		filter, text string
+		values       []any
+	}{
+		// Text against text: as written, so an index still serves it.
+		{`{"name":"ada"}`, `(("name" = CAST($1 AS text)))`, []any{"ada"}},
+		// Numeric text against a number column is the number (affinity).
+		{`{"count":"5"}`, `(("count" = CAST($1 AS bigint)))`, []any{int64(5)}},
+		{`{"count":" 5.0 "}`, `(("count" = CAST($1 AS bigint)))`, []any{int64(5)}},
+		{`{"count":{"gt":"1.5"}}`, `((CAST("count" AS numeric) > CAST(CAST($1 AS text) AS numeric)))`, []any{"1.5"}},
+		{`{"ratio":{"lt":"1"}}`, `(("ratio" < CAST($1 AS double precision)))`, []any{float64(1)}},
+		// Other text is above every number: SQLite's answer, not a refusal.
+		{`{"count":"abc"}`, `(((CASE WHEN "count" IS NULL THEN NULL ELSE false END)))`, nil},
+		{`{"count":{"lt":""}}`, `(((CASE WHEN "count" IS NULL THEN NULL ELSE true END)))`, nil},
+		{`{"count":{"gt":"1e400"}}`, `(((CASE WHEN "count" IS NULL THEN NULL ELSE false END)))`, nil},
+		// A boolean holds 1 and 0.
+		{`{"on":"1"}`, `(("on" = CAST($1 AS boolean)))`, []any{true}},
+		{`{"on":{"gte":"2"}}`, `((CAST("on" AS integer) >= CAST(CAST($1 AS text) AS numeric)))`, []any{"2"}},
+		{`{"on":"true"}`, `(((CASE WHEN "on" IS NULL THEN NULL ELSE false END)))`, nil},
+		// A NUL cannot be in Postgres text; compared byte-wise.
+		{`{"name":"a\u0000b"}`, `((convert_to("name", 'UTF8') = CAST($1 AS bytea)))`, []any{[]byte("a\x00b")}},
+		// An unknown name is SQLite's string literal, answered in Go.
+		{`{"nosuchcol":"x"}`, `((false))`, nil},
+		{`{"nosuchcol":"nosuchcol"}`, `((true))`, nil},
+		{`{"nosuchcol":{"gt":5}}`, `((true))`, nil},
+		{`{"nosuchcol":null}`, `((false))`, nil},
+		{`{"nosuchcol":{"ne":null}}`, `((true))`, nil},
+		// IN is the OR of the equalities; NOT IN its negation.
+		{`{"count":{"in":["1","x",null]}}`,
+			`((("count" = CAST($1 AS bigint) OR (CASE WHEN "count" IS NULL THEN NULL ELSE false END) OR CAST(NULL AS boolean))))`,
+			[]any{int64(1)}},
+		{`{"name":{"nin":["a"]}}`, `((NOT ("name" = CAST($1 AS text))))`, []any{"a"}},
+		// The date-time and date columns are left to the driver.
+		{`{"at":{"gt":"2026-01-01T00:00:00.000Z"}}`, `(("at" > $1))`, []any{"2026-01-01T00:00:00.000Z"}},
+	} {
+		f, err := DecodeFilter([]byte(c.filter))
+		if err != nil {
+			t.Fatal(err)
+		}
+		clause, err := pg.CompileWhere(f)
+		if err != nil {
+			t.Fatalf("%s: %v", c.filter, err)
+		}
+		if clause.Text() != c.text {
+			t.Errorf("%s\n  got:  %s\n  want: %s", c.filter, clause.Text(), c.text)
+		}
+		if !reflect.DeepEqual(clause.Values(), c.values) && !(len(c.values) == 0 && len(clause.Values()) == 0) {
+			t.Errorf("%s: values %#v, want %#v", c.filter, clause.Values(), c.values)
+		}
+	}
+	// An unknown name's like binds the literal.
+	f, _ := DecodeFilter([]byte(`{"nosuchcol":{"like":"%such%"}}`))
+	clause, err := pg.CompileWhere(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantText(t, clause.Text(), `(((CAST($1 AS text)) COLLATE "C" ILIKE CAST($2 AS text) ESCAPE ''))`)
+	wantValues(t, clause.Values(), "nosuchcol", "%such%")
+}
+
+func TestSQLiteCompareValues(t *testing.T) {
+	for _, c := range []struct {
+		a, b  any
+		op    string
+		want  bool
+		known bool
+	}{
+		{"b", "a", ">", true, true},
+		{"a", 5.0, ">", true, true}, // text above numbers
+		{5.0, "a", "<", true, true}, // numbers below text
+		{"a", []byte{0}, "<", true, true},
+		{"a", nil, "=", false, false},
+		{1.0, 1.0, "=", true, true},
+		{"é", "z", ">", true, true}, // byte order: 0xC3 > 'z'
+	} {
+		ac, an, at, _ := classify(c.a)
+		bc, bn, bt, _ := classify(c.b)
+		got, known := sqliteCompareValues(ac, an, at, bc, bn, bt, c.op)
+		if got != c.want || known != c.known {
+			t.Errorf("%v %s %v = %v (known %v), want %v (%v)", c.a, c.op, c.b, got, known, c.want, c.known)
 		}
 	}
 }

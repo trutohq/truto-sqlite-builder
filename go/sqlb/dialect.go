@@ -47,6 +47,9 @@ type Dialect struct {
 	// operators answer as SQLite does rather than as this database does.
 	sqliteLike bool
 	sqliteJSON bool
+	// affinity is [SQLiteAffinity]'s column lookup, by pointer so a Dialect
+	// stays comparable.
+	affinity *affinityOpt
 }
 
 type placeholderStyle uint8

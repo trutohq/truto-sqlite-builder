@@ -15,10 +15,32 @@ import (
 // only changes how they are spelled. Options exist for one consumer's case:
 // a program that moved its data from SQLite to Postgres and must keep
 // answering its clients exactly as SQLite did (Truto, D-0873). Envoy's
-// [Postgres] is the dialect without options and is unchanged by this file.
-type Option uint8
+// [Postgres] is the dialect without options and is unchanged by them.
+type Option interface {
+	apply(d *Dialect) error
+}
+
+type flagOption uint8
 
 const (
+	flagLike flagOption = 1 << iota
+	flagJSONPath
+)
+
+func (f flagOption) apply(d *Dialect) error {
+	switch f {
+	case flagLike:
+		d.sqliteLike = true
+		d.regex = opClause{}
+	case flagJSONPath:
+		d.sqliteJSON = true
+	default:
+		return fmt.Errorf("sqlb: unknown option %d", f)
+	}
+	return nil
+}
+
+var (
 	// SQLiteLike makes `like` and `ilike` answer as SQLite's LIKE does:
 	// case-insensitive for ASCII letters only, with no escape character, over
 	// SQLite's text of the operand (an INTEGER is its digits, a BOOLEAN 1 or
@@ -28,13 +50,11 @@ const (
 	//
 	// `COLLATE "C"` is what makes the case folding ASCII-only, whatever the
 	// database's own locale (measured on Postgres 17: 'É' ILIKE 'é' is false
-	// under "C", true under a Unicode collation). `regex` is refused, as D1
-	// refuses it (it has no REGEXP function).
+	// under "C"). `regex` is refused, as D1 refuses it (no REGEXP function).
 	//
-	// Not reproduced, and documented in DIFFERENCES.md: a REAL's text
-	// (SQLite writes 5.0 as '5.0', Postgres '5'), a date-time's text (whatever
-	// the column type renders), and SQLite's per-row LIKE limits.
-	SQLiteLike Option = 1 << iota
+	// Not reproduced: a REAL's text (SQLite writes 5.0 as '5.0', Postgres
+	// '5'), and a date-time's text (whatever the column type renders).
+	SQLiteLike Option = flagLike
 
 	// SQLiteJSONPath makes a dotted field (`config.a.b`) answer as SQLite's
 	// `json_extract(config, '$.a.b')` does, compared under SQLite's rules:
@@ -46,7 +66,7 @@ const (
 	//
 	// Numbers are bound as D1 binds them, as REALs: a Go integer compares as
 	// the double it converts to, and NaN and ±Inf bind as NULL.
-	SQLiteJSONPath
+	SQLiteJSONPath Option = flagJSONPath
 )
 
 // With returns the dialect with the options applied.
@@ -64,14 +84,11 @@ func (d Dialect) With(opts ...Option) (Dialect, error) {
 		return Dialect{}, fmt.Errorf("sqlb: the %s dialect has no SQLite-semantics options", d.name)
 	}
 	for _, o := range opts {
-		switch o {
-		case SQLiteLike:
-			d.sqliteLike = true
-			d.regex = opClause{}
-		case SQLiteJSONPath:
-			d.sqliteJSON = true
-		default:
-			return Dialect{}, fmt.Errorf("sqlb: unknown option %d", o)
+		if o == nil {
+			return Dialect{}, errors.New("sqlb: a nil option")
+		}
+		if err := o.apply(&d); err != nil {
+			return Dialect{}, err
 		}
 	}
 	return d, nil

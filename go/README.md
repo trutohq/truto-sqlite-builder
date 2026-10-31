@@ -266,6 +266,8 @@ pg, err := sqlb.Postgres.With(sqlb.SQLiteLike, sqlb.SQLiteJSONPath)
 | `SQLiteLike` | `like` and `ilike` are SQLite's LIKE: ASCII-only case folding (`COLLATE "C"` — measured: `'É' ILIKE 'é'` is false under it), no escape character, over SQLite's text of the operand (a boolean is `1`/`0`). `regex` is refused, as D1 has no REGEXP. |
 | `SQLiteJSONPath` | `config.a.b` is `json_extract(config, '$.a.b')` with SQLite's typing (true/false are 1/0, JSON null and a missing path NULL, an integer literal inside int64 an INTEGER) and SQLite's storage-class comparison: NULL < numbers < text < blob, so `config.a > 5` is TRUE for every string. Numbers bind as D1 binds them, as REALs; an INTEGER literal is compared with the exact value of the double. `.key` on an array and `[n]` on an object find nothing, as in SQLite. |
 
+| `SQLiteAffinity(kind)` | A plain field compares as SQLite compares it against its column's affinity: numeric text against a number column is the number (exactly, even fractional against a bigint); other text is above every number (`count = 'abc'` is false, never a refused parameter); a NUL-bearing text is compared byte-wise; and a name that is not a column is SQLite's string literal, answered in Go. `kind` is the caller's column lookup. |
+
 `SQLite.With(...)` returns SQLite unchanged (those are its own semantics);
 `MySQL` and `MSSQL` refuse the options. `TestPostgresWithoutOptionsIsUnchanged`
 pins Envoy's `Postgres` byte for byte.
@@ -273,7 +275,10 @@ pins Envoy's `Postgres` byte for byte.
 For a compiler outside `CompileFilter` that needs the same rules (Truto's legacy
 query dialect), three building blocks render one comparison, one sort key or
 one LIKE: `Dialect.CompareJSONPath`, `Dialect.OrderByJSONPath`,
-`Dialect.LikeSQLite`. Each refuses a dialect without its option.
+`Dialect.LikeSQLite`, `Dialect.CompareColumn`, `Dialect.LikeLiteral`. Each
+refuses a dialect without its option. `SQLiteNumber` and `RealToInt` are
+SQLite's numeric affinity, exported so a driver converting values at its
+boundary reads text exactly as these comparisons do.
 
 What the options do **not** reproduce, by design or as recorded differences
 (Truto's `DIVERGENCES.md` carries the rows): a REAL's text in LIKE (`5.0` vs

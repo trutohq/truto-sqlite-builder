@@ -375,6 +375,24 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 			return nil
 		}
 
+		if !isPath && ctx.dialect.affinity != nil {
+			sc := ctx.columnTarget(alias, column)
+			ctx.buf = append(ctx.buf, '(')
+			if scalar == nil {
+				sc.writeIsNull(ctx, false)
+			} else {
+				v, err := Value(scalar)
+				if err != nil {
+					return err
+				}
+				if err := ctx.writeColumnCompare(sc.col, sc.name, sc.kind, "=", v); err != nil {
+					return err
+				}
+			}
+			ctx.buf = append(ctx.buf, ')')
+			return nil
+		}
+
 		ctx.buf = append(ctx.buf, '(')
 		if isPath {
 			ctx.buf = append(ctx.buf, ctx.dialect.jsonExtract...)
@@ -433,6 +451,11 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 		}
 		sj = &e
 	}
+	var sc *colTarget
+	if !isPath && ctx.dialect.affinity != nil {
+		t := ctx.columnTarget(alias, column)
+		sc = &t
+	}
 
 	ctx.scratch = ctx.scratch[:0]
 	if isPath && sj == nil {
@@ -473,6 +496,12 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 			ctx.writeIsNull(*sj, jsTruthy(existsValue))
 			return nil
 		}
+		if sc != nil {
+			ctx.buf = append(ctx.buf, '(')
+			sc.writeIsNull(ctx, jsTruthy(existsValue))
+			ctx.buf = append(ctx.buf, ')')
+			return nil
+		}
 		ctx.buf = append(ctx.buf, '(')
 		ctx.emitField(fieldExpr, isPath)
 		if jsTruthy(existsValue) {
@@ -505,7 +534,7 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 			ctx.buf = append(ctx.buf, " AND "...)
 		}
 		written++
-		if err := compileOperatorInto(e.name, e.value, fieldExpr, isPath, sj, ctx); err != nil {
+		if err := compileOperatorInto(e.name, e.value, fieldExpr, isPath, sj, sc, ctx); err != nil {
 			return err
 		}
 	}
@@ -520,7 +549,7 @@ func compileFieldConditionInto(field string, condition any, ctx *compileCtx, ali
 
 func emits(op string) bool { return op != "and" && op != "or" }
 
-func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj *jsonExpr, ctx *compileCtx) error {
+func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj *jsonExpr, sc *colTarget, ctx *compileCtx) error {
 	switch op {
 	case "gt", "gte", "lt", "lte":
 		v, err := Value(value)
@@ -529,6 +558,9 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj
 		}
 		if sj != nil {
 			return ctx.writeCompare(*sj, comparator(op), v)
+		}
+		if sc != nil {
+			return ctx.writeColumnCompare(sc.col, sc.name, sc.kind, comparator(op), v)
 		}
 		ctx.emitField(fieldExpr, isPath)
 		ctx.buf = append(ctx.buf, ' ')
@@ -548,6 +580,17 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj
 				return err
 			}
 			return ctx.writeCompare(*sj, "<>", v)
+		}
+		if sc != nil {
+			if isNullish(value) {
+				sc.writeIsNull(ctx, true)
+				return nil
+			}
+			v, err := Value(value)
+			if err != nil {
+				return err
+			}
+			return ctx.writeColumnCompare(sc.col, sc.name, sc.kind, "<>", v)
 		}
 		ctx.emitField(fieldExpr, isPath)
 		if isNullish(value) {
@@ -591,6 +634,17 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj
 			}
 			return ctx.writeIn(*sj, converted, op == "nin")
 		}
+		if sc != nil {
+			converted := make([]any, len(items))
+			for i, item := range items {
+				v, err := Value(item)
+				if err != nil {
+					return err
+				}
+				converted[i] = v
+			}
+			return ctx.writeColumnIn(sc.col, sc.name, sc.kind, converted, op == "nin")
+		}
 		ctx.emitField(fieldExpr, isPath)
 		if op == "nin" {
 			ctx.buf = append(ctx.buf, " NOT"...)
@@ -624,6 +678,24 @@ func compileOperatorInto(op string, value any, fieldExpr []byte, isPath bool, sj
 		if length, over := exceedsUTF16(pattern, MaxPatternLength); over {
 			return fmt.Errorf("%s pattern too long: %d characters (max: %d)",
 				name, length, MaxPatternLength)
+		}
+		if sc != nil && sc.kind == ColumnUnknown && op != "regex" {
+			// SQLite's `'name' LIKE ?`: the name is a string literal.
+			clause := ctx.dialect.ilike
+			if op == "like" {
+				clause = opClause{mid: " LIKE "}
+			}
+			if ctx.dialect.sqliteLike {
+				clause = opClause{pre: "(", mid: ") COLLATE \"C\" ILIKE CAST(", post: " AS text) ESCAPE ''"}
+			}
+			ctx.buf = append(ctx.buf, clause.pre...)
+			ctx.buf = append(ctx.buf, "CAST("...)
+			ctx.bind(sc.name)
+			ctx.buf = append(ctx.buf, " AS text)"...)
+			ctx.buf = append(ctx.buf, clause.mid...)
+			ctx.bind(pattern)
+			ctx.buf = append(ctx.buf, clause.post...)
+			return nil
 		}
 		if op != "regex" && ctx.dialect.sqliteLike {
 			e := jsonExpr{col: fieldExpr, toJSON: true}
